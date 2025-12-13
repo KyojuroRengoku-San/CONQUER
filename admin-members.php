@@ -38,16 +38,16 @@ if($membershipPlan) {
     $params[] = $membershipPlan;
 }
 
-$whereSQL = implode(' AND ', $whereClauses);
+$whereSQL = !empty($whereClauses) ? implode(' AND ', $whereClauses) : '1=1';
 
 try {
     // Count total members
     $countSQL = "SELECT COUNT(*) FROM users u LEFT JOIN gym_members gm ON u.email = gm.Email WHERE $whereSQL";
-    $stmt = $pdo->prepare($countSQL);
-    $stmt->execute($params);
-    $totalMembers = $stmt->fetchColumn();
+    $countStmt = $pdo->prepare($countSQL);
+    $countStmt->execute($params);
+    $totalMembers = $countStmt->fetchColumn();
 
-    // Get members - FIXED: Check if payments table exists
+    // Get members
     $membersSql = "
         SELECT 
             u.*, 
@@ -80,7 +80,8 @@ try {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Manage Members | Admin Dashboard</title>
-       <!-- Fonts -->
+    
+    <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700;800&family=Montserrat:wght@900&display=swap" rel="stylesheet">
@@ -88,11 +89,188 @@ try {
     <!-- Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
-    <!-- Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    
     <!-- CSS -->
     <link rel="stylesheet" href="dashboard-style.css">
+    <style>
+        /* Additional styles for members management */
+        .members-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .members-table th {
+            background: #f8f9fa;
+            font-weight: 600;
+            padding: 1rem;
+            text-align: left;
+            border-bottom: 2px solid #dee2e6;
+            white-space: nowrap;
+        }
+        
+        .members-table td {
+            padding: 1rem;
+            border-bottom: 1px solid #dee2e6;
+            vertical-align: middle;
+        }
+        
+        .members-table tr:hover {
+            background-color: #f8f9fa;
+        }
+        
+        /* Filters */
+        .filters {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 12px;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            display: flex;
+            gap: 1rem;
+            align-items: flex-end;
+            flex-wrap: wrap;
+        }
+        
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            min-width: 200px;
+        }
+        
+        .filter-group label {
+            font-weight: 600;
+            color: #2f3542;
+            font-size: 0.9rem;
+        }
+        
+        .filter-group input,
+        .filter-group select {
+            padding: 0.75rem;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            font-family: inherit;
+            font-size: 0.95rem;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            width: 100%;
+        }
+        
+        .filter-group input:focus,
+        .filter-group select:focus {
+            outline: none;
+            border-color: #ff4757;
+            box-shadow: 0 0 0 3px rgba(255, 71, 87, 0.1);
+        }
+        
+        /* Member status badges */
+        .member-status {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 50px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+        
+        .status-active {
+            background: rgba(46, 213, 115, 0.2);
+            color: #2ed573;
+        }
+        
+        .status-inactive {
+            background: rgba(255, 71, 87, 0.2);
+            color: #ff4757;
+        }
+        
+        .status-pending {
+            background: rgba(255, 165, 2, 0.2);
+            color: #ffa502;
+        }
+        
+        .status-suspended {
+            background: rgba(108, 117, 125, 0.2);
+            color: #6c757d;
+        }
+        
+        /* Button styles */
+        .btn-sm {
+            padding: 0.4rem 0.8rem;
+            font-size: 0.85rem;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            background: #e9ecef;
+            color: #495057;
+            transition: all 0.3s;
+            text-decoration: none;
+        }
+        
+        .btn-sm:hover {
+            background: #dee2e6;
+            text-decoration: none;
+        }
+        
+        .btn-sm.btn-danger {
+            background: #ff4757;
+            color: white;
+        }
+        
+        .btn-sm.btn-danger:hover {
+            background: #ff2e43;
+        }
+        
+        /* Pagination */
+        .pagination {
+            display: flex;
+            justify-content: center;
+            gap: 0.5rem;
+            margin-top: 2rem;
+            flex-wrap: wrap;
+        }
+        
+        .page-link {
+            display: inline-block;
+            padding: 0.5rem 1rem;
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            color: #495057;
+            text-decoration: none;
+            transition: all 0.3s;
+            font-weight: 500;
+        }
+        
+        .page-link:hover {
+            background: #e9ecef;
+        }
+        
+        .page-link.active {
+            background: #ff4757;
+            color: white;
+            border-color: #ff4757;
+        }
+        
+        /* Responsive table */
+        @media (max-width: 768px) {
+            .members-table {
+                min-width: 800px;
+            }
+            
+            .table-container {
+                overflow-x: auto;
+            }
+            
+            .filters {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .filter-group {
+                min-width: auto;
+            }
+        }
+    </style>
 </head>
 <body>
     <?php include 'admin-sidebar.php'; ?>
@@ -122,8 +300,8 @@ try {
                         <p>Total Members</p>
                     </div>
                     <div class="stat">
-                        <h3><?php echo $page; ?></h3>
-                        <p>Current Page</p>
+                        <h3><?php echo ceil($totalMembers / $limit); ?></h3>
+                        <p>Total Pages</p>
                     </div>
                 </div>
             </div>
@@ -153,7 +331,7 @@ try {
             <div class="content-card">
                 <div class="card-header">
                     <h3>Members List</h3>
-                    <a href="admin-export-members.php" class="btn-secondary">
+                    <a href="admin-export-members.php" class="btn-secondary btn-sm">
                         <i class="fas fa-download"></i> Export CSV
                     </a>
                 </div>
@@ -173,34 +351,42 @@ try {
                                 </tr>
                             </thead>
                             <tbody>
-                                <?php foreach($members as $member): ?>
+                                <?php if(count($members) > 0): ?>
+                                    <?php foreach($members as $member): ?>
+                                        <tr>
+                                            <td>#<?php echo $member['id']; ?></td>
+                                            <td><?php echo htmlspecialchars($member['full_name']); ?></td>
+                                            <td><?php echo htmlspecialchars($member['email']); ?></td>
+                                            <td><?php echo htmlspecialchars($member['MembershipPlan'] ?? 'N/A'); ?></td>
+                                            <td><?php echo date('M j, Y', strtotime($member['JoinDate'] ?? $member['created_at'])); ?></td>
+                                            <td>$<?php echo number_format($member['total_spent'] ?? 0, 2); ?></td>
+                                            <td>
+                                                <span class="member-status status-<?php echo strtolower($member['status'] ?? 'active'); ?>">
+                                                    <?php echo ucfirst($member['status'] ?? 'active'); ?>
+                                                </span>
+                                            </td>
+                                            <td>
+                                                <div style="display: flex; gap: 0.5rem;">
+                                                    <a href="admin-member-view.php?id=<?php echo $member['id']; ?>" class="btn-sm">
+                                                        <i class="fas fa-eye"></i>
+                                                    </a>
+                                                    <a href="admin-edit-member.php?id=<?php echo $member['id']; ?>" class="btn-sm">
+                                                        <i class="fas fa-edit"></i>
+                                                    </a>
+                                                    <button class="btn-sm btn-danger" onclick="confirmDelete(<?php echo $member['id']; ?>)">
+                                                        <i class="fas fa-trash"></i>
+                                                    </button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                <?php else: ?>
                                     <tr>
-                                        <td>#<?php echo $member['id']; ?></td>
-                                        <td><?php echo htmlspecialchars($member['full_name']); ?></td>
-                                        <td><?php echo htmlspecialchars($member['email']); ?></td>
-                                        <td><?php echo htmlspecialchars($member['MembershipPlan'] ?? 'N/A'); ?></td>
-                                        <td><?php echo date('M j, Y', strtotime($member['JoinDate'] ?? $member['created_at'])); ?></td>
-                                        <td>$<?php echo number_format($member['total_spent'] ?? 0, 2); ?></td>
-                                        <td>
-                                            <span class="member-status status-<?php echo ($member['status'] ?? 'active'); ?>">
-                                                <?php echo ucfirst($member['status'] ?? 'active'); ?>
-                                            </span>
-                                        </td>
-                                        <td>
-                                            <div style="display: flex; gap: 0.5rem;">
-                                                <button class="btn-sm" onclick="window.location.href='admin-member-view.php?id=<?php echo $member['id']; ?>'">
-                                                    <i class="fas fa-eye"></i>
-                                                </button>
-                                                <button class="btn-sm" onclick="window.location.href='admin-edit-member.php?id=<?php echo $member['id']; ?>'">
-                                                    <i class="fas fa-edit"></i>
-                                                </button>
-                                                <button class="btn-sm btn-danger" onclick="confirmDelete(<?php echo $member['id']; ?>)">
-                                                    <i class="fas fa-trash"></i>
-                                                </button>
-                                            </div>
+                                        <td colspan="8" style="text-align: center; padding: 2rem;">
+                                            <p style="color: #6c757d; font-style: italic;">No members found</p>
                                         </td>
                                     </tr>
-                                <?php endforeach; ?>
+                                <?php endif; ?>
                             </tbody>
                         </table>
                     </div>
@@ -210,13 +396,34 @@ try {
                         <div class="pagination">
                             <?php
                             $totalPages = ceil($totalMembers / $limit);
-                            for($i = 1; $i <= $totalPages; $i++):
-                            ?>
-                                <a href="?page=<?php echo $i; ?>&search=<?php echo urlencode($search); ?>&plan=<?php echo urlencode($membershipPlan); ?>" 
-                                   class="page-link <?php echo $i == $page ? 'active' : ''; ?>">
-                                    <?php echo $i; ?>
+                            
+                            // Previous button
+                            if($page > 1): ?>
+                                <a href="?page=<?php echo $page-1; ?>&search=<?php echo urlencode($search); ?>&plan=<?php echo urlencode($membershipPlan); ?>" 
+                                   class="page-link">
+                                    <i class="fas fa-chevron-left"></i>
                                 </a>
+                            <?php endif; ?>
+                            
+                            <?php for($i = 1; $i <= $totalPages; $i++): 
+                                // Show limited pages around current page
+                                if($i == 1 || $i == $totalPages || ($i >= $page-2 && $i <= $page+2)): ?>
+                                    <a href="?page=<?php echo $i; ?>&search=<?php echo urlencode($search); ?>&plan=<?php echo urlencode($membershipPlan); ?>" 
+                                       class="page-link <?php echo $i == $page ? 'active' : ''; ?>">
+                                        <?php echo $i; ?>
+                                    </a>
+                                <?php elseif($i == $page-3 || $i == $page+3): ?>
+                                    <span class="page-link">...</span>
+                                <?php endif; ?>
                             <?php endfor; ?>
+                            
+                            // Next button
+                            <?php if($page < $totalPages): ?>
+                                <a href="?page=<?php echo $page+1; ?>&search=<?php echo urlencode($search); ?>&plan=<?php echo urlencode($membershipPlan); ?>" 
+                                   class="page-link">
+                                    <i class="fas fa-chevron-right"></i>
+                                </a>
+                            <?php endif; ?>
                         </div>
                     <?php endif; ?>
                 </div>

@@ -1,6 +1,5 @@
 <?php
 session_start();
-// FIXED: Added proper database connection
 require_once 'config/database.php';
 
 try {
@@ -34,6 +33,7 @@ if($location) {
 $whereSQL = !empty($whereClauses) ? 'WHERE ' . implode(' AND ', $whereClauses) : '';
 
 try {
+    // Get all equipment with fallback for missing columns
     $stmt = $pdo->prepare("
         SELECT * FROM equipment
         $whereSQL
@@ -56,6 +56,15 @@ try {
 } catch (PDOException $e) {
     die("Database error: " . $e->getMessage());
 }
+
+// Debug: Check what columns exist in the equipment table
+try {
+    $columnsStmt = $pdo->query("SHOW COLUMNS FROM equipment");
+    $columns = $columnsStmt->fetchAll(PDO::FETCH_COLUMN);
+    // Uncomment to debug: print_r($columns);
+} catch (PDOException $e) {
+    // Continue without column info
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -63,7 +72,8 @@ try {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Equipment Management | Admin Dashboard</title>
-        <!-- Fonts -->
+    
+    <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700;800&family=Montserrat:wght@900&display=swap" rel="stylesheet">
@@ -71,11 +81,175 @@ try {
     <!-- Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
-    <!-- Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    
     <!-- CSS -->
     <link rel="stylesheet" href="dashboard-style.css">
+    <style>
+        /* Additional styles for equipment management */
+        .equipment-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .equipment-table th {
+            background: #f8f9fa;
+            font-weight: 600;
+            padding: 1rem;
+            text-align: left;
+            border-bottom: 2px solid #dee2e6;
+        }
+        
+        .equipment-table td {
+            padding: 1rem;
+            border-bottom: 1px solid #dee2e6;
+            vertical-align: top;
+        }
+        
+        .equipment-table tr:hover {
+            background-color: #f8f9fa;
+        }
+        
+        .equipment-table small {
+            font-size: 0.85rem;
+            color: #6c757d;
+        }
+        
+        /* Equipment status badges */
+        .status-operational {
+            background: rgba(46, 213, 115, 0.2);
+            color: #2ed573;
+            padding: 0.25rem 0.75rem;
+            border-radius: 50px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+        
+        .status-maintenance {
+            background: rgba(255, 165, 2, 0.2);
+            color: #ffa502;
+            padding: 0.25rem 0.75rem;
+            border-radius: 50px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+        
+        .status-outofservice {
+            background: rgba(255, 71, 87, 0.2);
+            color: #ff4757;
+            padding: 0.25rem 0.75rem;
+            border-radius: 50px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+        
+        .status-active {
+            background: rgba(46, 213, 115, 0.2);
+            color: #2ed573;
+            padding: 0.25rem 0.75rem;
+            border-radius: 50px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+        
+        /* Maintenance indicators */
+        .maintenance-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 0.5rem;
+        }
+        
+        .indicator-good {
+            background-color: #2ed573;
+        }
+        
+        .indicator-warning {
+            background-color: #ffa502;
+        }
+        
+        .indicator-danger {
+            background-color: #ff4757;
+        }
+        
+        /* Button styles */
+        .btn-sm {
+            padding: 0.4rem 0.8rem;
+            font-size: 0.85rem;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            background: #e9ecef;
+            color: #495057;
+            transition: all 0.3s;
+        }
+        
+        .btn-sm:hover {
+            background: #dee2e6;
+        }
+        
+        .btn-sm.btn-warning {
+            background: #ffa502;
+            color: white;
+        }
+        
+        .btn-sm.btn-warning:hover {
+            background: #e69500;
+        }
+        
+        /* Filter form styles */
+        .equipment-filters {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 12px;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            display: flex;
+            gap: 1rem;
+            align-items: flex-end;
+            flex-wrap: wrap;
+        }
+        
+        .equipment-filters > div {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            min-width: 200px;
+        }
+        
+        .equipment-filters label {
+            font-weight: 600;
+            color: #2f3542;
+            font-size: 0.9rem;
+        }
+        
+        .equipment-filters select {
+            padding: 0.75rem;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            font-family: inherit;
+            font-size: 0.95rem;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        .equipment-filters select:focus {
+            outline: none;
+            border-color: #ff4757;
+            box-shadow: 0 0 0 3px rgba(255, 71, 87, 0.1);
+        }
+        
+        /* Status color adjustments */
+        .status-active { 
+            background: rgba(46, 213, 115, 0.2); 
+            color: #2ed573; 
+        }
+        .status-inactive { 
+            background: rgba(255, 71, 87, 0.2); 
+            color: #ff4757; 
+        }
+    </style>
 </head>
 <body>
     <?php include 'admin-sidebar.php'; ?>
@@ -84,7 +258,7 @@ try {
         <div class="top-bar">
             <div class="search-bar">
                 <i class="fas fa-search"></i>
-                <input type="text" placeholder="Search equipment...">
+                <input type="text" placeholder="Search equipment..." id="searchInput">
             </div>
             <div class="top-bar-actions">
                 <button class="btn-primary" onclick="window.location.href='admin-add-equipment.php'">
@@ -120,6 +294,7 @@ try {
                         <option value="operational" <?php echo $status === 'operational' ? 'selected' : ''; ?>>Operational</option>
                         <option value="maintenance" <?php echo $status === 'maintenance' ? 'selected' : ''; ?>>Maintenance</option>
                         <option value="outofservice" <?php echo $status === 'outofservice' ? 'selected' : ''; ?>>Out of Service</option>
+                        <option value="active" <?php echo $status === 'active' ? 'selected' : ''; ?>>Active</option>
                     </select>
                 </div>
                 <div>
@@ -159,33 +334,73 @@ try {
                             </thead>
                             <tbody>
                                 <?php foreach($equipment as $item): 
-                                    $daysUntilMaintenance = floor((strtotime($item['next_maintenance']) - time()) / (60 * 60 * 24));
-                                    $indicatorClass = '';
-                                    if($item['status'] === 'maintenance' || $item['status'] === 'outofservice') {
-                                        $indicatorClass = 'indicator-danger';
-                                    } elseif($daysUntilMaintenance <= 7) {
-                                        $indicatorClass = 'indicator-warning';
+                                    // Calculate days until maintenance with null check
+                                    $daysUntilMaintenance = 'N/A';
+                                    $indicatorClass = 'indicator-good';
+                                    
+                                    if(!empty($item['next_maintenance']) && $item['next_maintenance'] != '0000-00-00') {
+                                        $daysUntilMaintenance = floor((strtotime($item['next_maintenance']) - time()) / (60 * 60 * 24));
+                                        
+                                        if($item['status'] === 'maintenance' || $item['status'] === 'outofservice') {
+                                            $indicatorClass = 'indicator-danger';
+                                        } elseif($daysUntilMaintenance <= 7) {
+                                            $indicatorClass = 'indicator-warning';
+                                        } else {
+                                            $indicatorClass = 'indicator-good';
+                                        }
+                                    }
+                                    
+                                    // Safely access array keys with isset checks
+                                    $serialNumber = isset($item['serial_number']) && !empty($item['serial_number']) ? htmlspecialchars($item['serial_number']) : 'N/A';
+                                    $model = isset($item['model']) && !empty($item['model']) ? htmlspecialchars($item['model']) : '';
+                                    $brand = isset($item['brand']) ? htmlspecialchars($item['brand']) : 'Unknown';
+                                    $locationName = isset($item['location']) ? htmlspecialchars($item['location']) : 'Unknown';
+                                    $purchaseDate = isset($item['purchase_date']) && $item['purchase_date'] != '0000-00-00' ? date('M j, Y', strtotime($item['purchase_date'])) : 'Unknown';
+                                    $lastMaintenance = isset($item['last_maintenance']) && $item['last_maintenance'] != '0000-00-00' ? date('M j, Y', strtotime($item['last_maintenance'])) : 'Never';
+                                    $nextMaintenance = isset($item['next_maintenance']) && $item['next_maintenance'] != '0000-00-00' ? date('M j, Y', strtotime($item['next_maintenance'])) : 'Not scheduled';
+                                    $status = isset($item['status']) ? htmlspecialchars($item['status']) : 'Unknown';
+                                    
+                                    // Format days text
+                                    if($daysUntilMaintenance === 'N/A') {
+                                        $daysText = '';
+                                    } elseif($daysUntilMaintenance > 0) {
+                                        $daysText = "in $daysUntilMaintenance days";
+                                    } elseif($daysUntilMaintenance === 0) {
+                                        $daysText = "Due today";
                                     } else {
-                                        $indicatorClass = 'indicator-good';
+                                        $daysText = "Overdue";
                                     }
                                 ?>
                                     <tr>
                                         <td>
                                             <strong><?php echo htmlspecialchars($item['equipment_name']); ?></strong><br>
-                                            <small>Serial: <?php echo htmlspecialchars($item['serial_number']); ?></small>
-                                        </td>
-                                        <td><?php echo htmlspecialchars($item['brand']); ?> <?php echo htmlspecialchars($item['model']); ?></td>
-                                        <td><?php echo htmlspecialchars($item['location']); ?></td>
-                                        <td><?php echo date('M j, Y', strtotime($item['purchase_date'])); ?></td>
-                                        <td><?php echo $item['last_maintenance'] ? date('M j, Y', strtotime($item['last_maintenance'])) : 'Never'; ?></td>
-                                        <td>
-                                            <span class="maintenance-indicator <?php echo $indicatorClass; ?>"></span>
-                                            <?php echo date('M j, Y', strtotime($item['next_maintenance'])); ?><br>
-                                            <small><?php echo $daysUntilMaintenance > 0 ? "in $daysUntilMaintenance days" : "Overdue"; ?></small>
+                                            <?php if($serialNumber !== 'N/A'): ?>
+                                                <small>Serial: <?php echo $serialNumber; ?></small>
+                                            <?php endif; ?>
                                         </td>
                                         <td>
-                                            <span class="equipment-status status-<?php echo $item['status']; ?>">
-                                                <?php echo ucfirst($item['status']); ?>
+                                            <?php echo $brand; ?>
+                                            <?php if($model): ?>
+                                                <br><small><?php echo $model; ?></small>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td><?php echo $locationName; ?></td>
+                                        <td><?php echo $purchaseDate; ?></td>
+                                        <td><?php echo $lastMaintenance; ?></td>
+                                        <td>
+                                            <?php if($nextMaintenance !== 'Not scheduled'): ?>
+                                                <span class="maintenance-indicator <?php echo $indicatorClass; ?>"></span>
+                                                <?php echo $nextMaintenance; ?><br>
+                                                <?php if($daysText): ?>
+                                                    <small><?php echo $daysText; ?></small>
+                                                <?php endif; ?>
+                                            <?php else: ?>
+                                                <?php echo $nextMaintenance; ?>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td>
+                                            <span class="status-<?php echo strtolower($status); ?>">
+                                                <?php echo ucfirst($status); ?>
                                             </span>
                                         </td>
                                         <td>
@@ -196,7 +411,7 @@ try {
                                                 <button class="btn-sm" onclick="window.location.href='admin-edit-equipment.php?id=<?php echo $item['id']; ?>'">
                                                     <i class="fas fa-edit"></i>
                                                 </button>
-                                                <?php if($item['status'] !== 'maintenance'): ?>
+                                                <?php if($status !== 'maintenance'): ?>
                                                     <button class="btn-sm btn-warning" onclick="markForMaintenance(<?php echo $item['id']; ?>)">
                                                         <i class="fas fa-tools"></i>
                                                     </button>
@@ -219,6 +434,21 @@ try {
                 window.location.href = 'admin-mark-maintenance.php?id=' + equipmentId;
             }
         }
+        
+        // Search functionality
+        document.getElementById('searchInput').addEventListener('input', function(e) {
+            const searchTerm = e.target.value.toLowerCase();
+            const rows = document.querySelectorAll('.equipment-table tbody tr');
+            
+            rows.forEach(row => {
+                const text = row.textContent.toLowerCase();
+                if(text.includes(searchTerm)) {
+                    row.style.display = '';
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+        });
     </script>
 </body>
 </html>

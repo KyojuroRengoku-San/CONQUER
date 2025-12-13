@@ -54,15 +54,15 @@ try {
         error_log("Gym members table error: " . $e->getMessage());
     }
     
-    // Upcoming classes - check if bookings and classes tables exist
+    // Upcoming classes - FIXED QUERY
     $upcomingClasses = [];
     try {
         $classesStmt = $pdo->prepare("
-            SELECT c.*, t.full_name as trainer_name 
+            SELECT c.*, u.full_name as trainer_name 
             FROM bookings b 
             JOIN classes c ON b.class_id = c.id 
-            JOIN users t ON c.trainer_id = t.id 
-            WHERE b.user_id = ? AND b.status = 'confirmed' 
+            JOIN users u ON c.trainer_id = u.id 
+            WHERE b.user_id = ? AND b.status IN ('confirmed', 'pending') 
             AND c.schedule > NOW() 
             ORDER BY c.schedule ASC 
             LIMIT 3
@@ -71,6 +71,22 @@ try {
         $upcomingClasses = $classesStmt->fetchAll();
     } catch(PDOException $e) {
         error_log("Classes query error: " . $e->getMessage());
+        // Try alternative query if trainer join fails
+        try {
+            $classesStmt = $pdo->prepare("
+                SELECT c.*, 'Trainer' as trainer_name 
+                FROM bookings b 
+                JOIN classes c ON b.class_id = c.id 
+                WHERE b.user_id = ? AND b.status IN ('confirmed', 'pending')
+                AND c.schedule > NOW() 
+                ORDER BY c.schedule ASC 
+                LIMIT 3
+            ");
+            $classesStmt->execute([$user_id]);
+            $upcomingClasses = $classesStmt->fetchAll();
+        } catch(PDOException $e2) {
+            error_log("Alternative classes query error: " . $e2->getMessage());
+        }
     }
     
     // Recent payments
@@ -144,6 +160,44 @@ try {
             from { opacity: 0; transform: translateY(-20px); }
             to { opacity: 1; transform: translateY(0); }
         }
+        
+        /* Additional fix for class items */
+        .class-item {
+            display: flex;
+            align-items: center;
+            padding: 15px;
+            border-bottom: 1px solid #eee;
+            gap: 15px;
+        }
+        
+        .class-item:last-child {
+            border-bottom: none;
+        }
+        
+        .class-time {
+            min-width: 80px;
+            text-align: center;
+        }
+        
+        .class-details {
+            flex: 1;
+        }
+        
+        .class-tag {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            margin-top: 5px;
+        }
+        
+        .class-tag.yoga { background: #e6f7ff; color: #1890ff; }
+        .class-tag.hiit { background: #fff7e6; color: #fa8c16; }
+        .class-tag.strength { background: #f6ffed; color: #52c41a; }
+        .class-tag.cardio { background: #fff0f6; color: #eb2f96; }
+        .class-tag.crossfit { background: #f9f0ff; color: #722ed1; }
+        .class-tag.others { background: #f0f0f0; color: #595959; }
     </style>
 </head>
 <body>
@@ -181,27 +235,27 @@ try {
                 <i class="fas fa-home"></i>
                 <span>Dashboard</span>
             </a>
-            <a href="profile.php">
+            <a href="user-profile.php">
                 <i class="fas fa-user"></i>
                 <span>My Profile</span>
             </a>
-            <a href="my-classes.php">
+            <a href="user-classes.php">
                 <i class="fas fa-calendar-alt"></i>
                 <span>My Classes</span>
             </a>
-            <a href="payments.php">
+            <a href="user-payments.php">
                 <i class="fas fa-credit-card"></i>
                 <span>Payments</span>
             </a>
-            <a href="success-stories.php">
+            <a href="user-stories.php">
                 <i class="fas fa-trophy"></i>
                 <span>Success Stories</span>
             </a>
-            <a href="book-class.php">
+            <a href="user-bookclass.php">
                 <i class="fas fa-plus-circle"></i>
                 <span>Book Class</span>
             </a>
-            <a href="contact.php">
+            <a href="user-contact.php">
                 <i class="fas fa-envelope"></i>
                 <span>Support</span>
             </a>
@@ -228,7 +282,7 @@ try {
                     <i class="fas fa-bell"></i>
                     <span class="notification-badge">3</span>
                 </button>
-                <button class="btn-primary" onclick="window.location.href='book-class.php'">
+                <button class="btn-primary" onclick="window.location.href='user-bookclass.php'">
                     <i class="fas fa-plus"></i>
                     Book Class
                 </button>
@@ -277,7 +331,7 @@ try {
                     <div class="stat-info">
                         <h3>Total Classes</h3>
                         <p><?php echo isset($upcomingClasses) ? count($upcomingClasses) : 0; ?> Booked</p>
-                        <a href="my-classes.php">View All →</a>
+                        <a href="user-classes.php">View All →</a>
                     </div>
                 </div>
 
@@ -312,7 +366,7 @@ try {
                 <div class="content-card">
                     <div class="card-header">
                         <h3>Upcoming Classes</h3>
-                        <a href="my-classes.php">View All</a>
+                        <a href="user-classes.php">View All</a>
                     </div>
                     <div class="card-body">
                         <?php if(isset($upcomingClasses) && count($upcomingClasses) > 0): ?>
@@ -325,7 +379,7 @@ try {
                                     <div class="class-details">
                                         <h4><?php echo isset($class['class_name']) ? htmlspecialchars($class['class_name']) : 'Class'; ?></h4>
                                         <p><i class="fas fa-user"></i> <?php echo isset($class['trainer_name']) ? htmlspecialchars($class['trainer_name']) : 'Trainer'; ?></p>
-                                        <span class="class-tag <?php echo isset($class['class_type']) ? strtolower($class['class_type']) : ''; ?>">
+                                        <span class="class-tag <?php echo isset($class['class_type']) ? strtolower(preg_replace('/[^a-zA-Z]/', '', $class['class_type'])) : 'others'; ?>">
                                             <?php echo isset($class['class_type']) ? htmlspecialchars($class['class_type']) : 'General'; ?>
                                         </span>
                                     </div>
@@ -338,7 +392,7 @@ try {
                             <?php endforeach; ?>
                         <?php else: ?>
                             <p class="empty-state">No upcoming classes booked</p>
-                            <button class="btn-primary" onclick="window.location.href='book-class.php'">
+                            <button class="btn-primary" onclick="window.location.href='user-bookclass.php'">
                                 <i class="fas fa-plus"></i>
                                 Book Your First Class
                             </button>
@@ -371,7 +425,7 @@ try {
                                                 <td>$<?php echo isset($payment['amount']) ? number_format($payment['amount'], 2) : '0.00'; ?></td>
                                                 <td><?php echo isset($payment['payment_method']) ? htmlspecialchars($payment['payment_method']) : 'N/A'; ?></td>
                                                 <td>
-                                                    <span class="status-badge <?php echo isset($payment['status']) ? strtolower($payment['status']) : ''; ?>">
+                                                    <span class="status-badge <?php echo isset($payment['status']) ? strtolower($payment['status']) : 'pending'; ?>">
                                                         <?php echo isset($payment['status']) ? htmlspecialchars($payment['status']) : 'Pending'; ?>
                                                     </span>
                                                 </td>
@@ -393,7 +447,7 @@ try {
                     </div>
                     <div class="card-body">
                         <div class="quick-actions-grid">
-                            <a href="book-class.php" class="action-item">
+                            <a href="user-bookclass.php" class="action-item">
                                 <i class="fas fa-plus-circle"></i>
                                 <span>Book Class</span>
                             </a>

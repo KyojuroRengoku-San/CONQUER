@@ -1,95 +1,165 @@
 <?php
 session_start();
-require_once 'config/database.php';
 
+// Enable error reporting for debugging
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+
+// Check if user is logged in
 if(!isset($_SESSION['user_id']) || !isset($_SESSION['user_type']) || $_SESSION['user_type'] !== 'member') {
     header('Location: login.php');
     exit();
 }
 
-$user_id = $_SESSION['user_id'];
+// Initialize database connection
+$pdo = null;
 $message = '';
 $success = false;
 
-// Get user info
 try {
+    // Require and get database connection
+    require_once 'config/database.php';
+    $database = Database::getInstance();
+    $pdo = $database->getConnection();
+
+    $user_id = $_SESSION['user_id'];
+    
+    // Get user info
     $stmt = $pdo->prepare("SELECT * FROM users WHERE id = ?");
     $stmt->execute([$user_id]);
     $user = $stmt->fetch();
     
-    // Get member info
-    $memberStmt = $pdo->prepare("SELECT * FROM gym_members WHERE Email = ?");
-    $memberStmt->execute([$user['email']]);
-    $member = $memberStmt->fetch();
+    if(!$user) {
+        session_destroy();
+        header('Location: login.php');
+        exit();
+    }
     
-    // Get available classes
-    $classesStmt = $pdo->prepare("
-        SELECT c.*, t.full_name as trainer_name, t.specialization,
-               (c.capacity - (SELECT COUNT(*) FROM bookings WHERE class_id = c.id AND status = 'confirmed')) as available_slots
-        FROM classes c 
-        JOIN users t ON c.trainer_id = t.id 
-        WHERE c.schedule > NOW() 
-        AND c.status = 'active'
-        AND (c.capacity - (SELECT COUNT(*) FROM bookings WHERE class_id = c.id AND status = 'confirmed')) > 0
-        ORDER BY c.schedule ASC
-    ");
-    $classesStmt->execute();
-    $availableClasses = $classesStmt->fetchAll();
+    // Get member info
+    $member = null;
+    try {
+        $memberStmt = $pdo->prepare("SELECT * FROM gym_members WHERE Email = ?");
+        $memberStmt->execute([$user['email']]);
+        $member = $memberStmt->fetch();
+    } catch(PDOException $e) {
+        error_log("Member info error: " . $e->getMessage());
+    }
+    
+    // Get available classes - FIXED QUERY
+    $availableClasses = [];
+    try {
+        $classesStmt = $pdo->prepare("
+            SELECT c.*, u.full_name as trainer_name,
+                   (c.max_capacity - COALESCE(b.booked_count, 0)) as available_slots,
+                   c.max_capacity
+            FROM classes c 
+            JOIN users u ON c.trainer_id = u.id 
+            LEFT JOIN (
+                SELECT class_id, COUNT(*) as booked_count 
+                FROM bookings 
+                WHERE status IN ('confirmed', 'pending')
+                GROUP BY class_id
+            ) b ON c.id = b.class_id
+            WHERE c.schedule > NOW() 
+            AND c.status = 'active'
+            AND (c.max_capacity - COALESCE(b.booked_count, 0)) > 0
+            ORDER BY c.schedule ASC
+        ");
+        $classesStmt->execute();
+        $availableClasses = $classesStmt->fetchAll();
+    } catch(PDOException $e) {
+        error_log("Classes query error: " . $e->getMessage());
+        // Alternative query without trainer join
+        try {
+            $classesStmt = $pdo->prepare("
+                SELECT c.*, 'Trainer' as trainer_name,
+                       c.max_capacity as available_slots,
+                       c.max_capacity
+                FROM classes c 
+                WHERE c.schedule > NOW() 
+                AND c.status = 'active'
+                AND c.current_enrollment < c.max_capacity
+                ORDER BY c.schedule ASC
+            ");
+            $classesStmt->execute();
+            $availableClasses = $classesStmt->fetchAll();
+        } catch(PDOException $e2) {
+            error_log("Alternative classes query error: " . $e2->getMessage());
+        }
+    }
     
     // Get class types for filter
-    $typesStmt = $pdo->prepare("SELECT DISTINCT class_type FROM classes WHERE status = 'active' ORDER BY class_type");
-    $typesStmt->execute();
-    $classTypes = $typesStmt->fetchAll();
+    $classTypes = [];
+    try {
+        $typesStmt = $pdo->prepare("SELECT DISTINCT class_type FROM classes WHERE status = 'active' AND class_type IS NOT NULL AND class_type != '' ORDER BY class_type");
+        $typesStmt->execute();
+        $classTypes = $typesStmt->fetchAll();
+    } catch(PDOException $e) {
+        error_log("Class types error: " . $e->getMessage());
+    }
     
     // Handle booking submission
     if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['book_class'])) {
         $class_id = $_POST['class_id'];
         $notes = $_POST['notes'] ?? '';
         
-        // Check if user already booked this class
-        $checkStmt = $pdo->prepare("SELECT * FROM bookings WHERE user_id = ? AND class_id = ?");
-        $checkStmt->execute([$user_id, $class_id]);
+        // Validate class exists
+        $classCheck = $pdo->prepare("SELECT * FROM classes WHERE id = ? AND status = 'active' AND schedule > NOW()");
+        $classCheck->execute([$class_id]);
         
-        if($checkStmt->rowCount() > 0) {
-            $message = "You have already booked this class!";
+        if($classCheck->rowCount() == 0) {
+            $message = "Invalid class selection or class is no longer available!";
             $success = false;
         } else {
-            // Check class availability
-            $availabilityStmt = $pdo->prepare("
-                SELECT capacity, 
-                       (SELECT COUNT(*) FROM bookings WHERE class_id = ? AND status = 'confirmed') as booked_count
-                FROM classes WHERE id = ?
-            ");
-            $availabilityStmt->execute([$class_id, $class_id]);
-            $classInfo = $availabilityStmt->fetch();
+            // Check if user already booked this class
+            $checkStmt = $pdo->prepare("SELECT * FROM bookings WHERE user_id = ? AND class_id = ? AND status IN ('pending', 'confirmed')");
+            $checkStmt->execute([$user_id, $class_id]);
             
-            if($classInfo && $classInfo['booked_count'] < $classInfo['capacity']) {
-                // Insert booking
-                $insertStmt = $pdo->prepare("
-                    INSERT INTO bookings (user_id, class_id, booking_date, status, notes) 
-                    VALUES (?, ?, NOW(), 'pending', ?)
+            if($checkStmt->rowCount() > 0) {
+                $message = "You have already booked this class!";
+                $success = false;
+            } else {
+                // Check class availability
+                $availabilityStmt = $pdo->prepare("
+                    SELECT c.max_capacity, 
+                           COALESCE(COUNT(b.id), 0) as booked_count
+                    FROM classes c
+                    LEFT JOIN bookings b ON c.id = b.class_id AND b.status IN ('pending', 'confirmed')
+                    WHERE c.id = ?
+                    GROUP BY c.id
                 ");
+                $availabilityStmt->execute([$class_id]);
+                $classInfo = $availabilityStmt->fetch();
                 
-                if($insertStmt->execute([$user_id, $class_id, $notes])) {
-                    $message = "Class booked successfully! Waiting for confirmation.";
-                    $success = true;
+                if($classInfo && $classInfo['booked_count'] < $classInfo['max_capacity']) {
+                    // Insert booking
+                    $insertStmt = $pdo->prepare("
+                        INSERT INTO bookings (user_id, class_id, booking_date, notes, status) 
+                        VALUES (?, ?, NOW(), ?, 'pending')
+                    ");
                     
-                    // Refresh available classes
-                    $classesStmt->execute();
-                    $availableClasses = $classesStmt->fetchAll();
+                    if($insertStmt->execute([$user_id, $class_id, $notes])) {
+                        $message = "Class booked successfully! Waiting for confirmation.";
+                        $success = true;
+                        
+                        // Refresh available classes
+                        $classesStmt->execute();
+                        $availableClasses = $classesStmt->fetchAll();
+                    } else {
+                        $message = "Error booking class. Please try again.";
+                        $success = false;
+                    }
                 } else {
-                    $message = "Error booking class. Please try again.";
+                    $message = "This class is now full!";
                     $success = false;
                 }
-            } else {
-                $message = "This class is now full!";
-                $success = false;
             }
         }
     }
     
 } catch(PDOException $e) {
-    die("Database error: " . $e->getMessage());
+    $message = "Database error. Please try again later.";
+    error_log("Booking page error: " . $e->getMessage());
 }
 ?>
 <!DOCTYPE html>
@@ -108,7 +178,7 @@ try {
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
     <!-- CSS -->
-    <link rel="stylesheet" href="user-dashboard.css">
+    <link rel="stylesheet" href="dashboard-style.css">
     
     <style>
         /* Additional styles for booking page */
@@ -124,6 +194,7 @@ try {
             display: flex;
             gap: 1rem;
             flex-wrap: wrap;
+            align-items: flex-end;
         }
         
         .filter-group {
@@ -156,7 +227,6 @@ try {
         }
         
         .reset-filters {
-            align-self: flex-end;
             padding: 0.75rem 1.5rem;
             background: var(--light-color);
             border: none;
@@ -165,6 +235,7 @@ try {
             cursor: pointer;
             transition: var(--transition);
             font-weight: 600;
+            white-space: nowrap;
         }
         
         .reset-filters:hover {
@@ -211,6 +282,7 @@ try {
             gap: 1rem;
             color: var(--gray);
             font-size: 0.9rem;
+            flex-wrap: wrap;
         }
         
         .class-meta span {
@@ -309,6 +381,9 @@ try {
             border-radius: var(--radius-md);
             margin-bottom: 2rem;
             font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
         }
         
         .message.success {
@@ -332,6 +407,41 @@ try {
             box-shadow: var(--shadow-sm);
         }
         
+        .mt-3 {
+            margin-top: 1rem;
+        }
+        
+        .class-tag {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            margin-left: 5px;
+        }
+        
+        .class-tag.yoga { background: #e6f7ff; color: #1890ff; }
+        .class-tag.hiit { background: #fff7e6; color: #fa8c16; }
+        .class-tag.strength { background: #f6ffed; color: #52c41a; }
+        .class-tag.cardio { background: #fff0f6; color: #eb2f96; }
+        .class-tag.crossfit { background: #f9f0ff; color: #722ed1; }
+        .class-tag.others { background: #f0f0f0; color: #595959; }
+        
+        .btn-book {
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            transition: var(--transition);
+            font-weight: 600;
+        }
+        
+        .btn-book:hover {
+            background: var(--primary-dark);
+        }
+        
         @media (max-width: 768px) {
             .class-grid {
                 grid-template-columns: 1fr;
@@ -341,8 +451,12 @@ try {
                 flex-direction: column;
             }
             
+            .filter-group {
+                min-width: 100%;
+            }
+            
             .reset-filters {
-                align-self: stretch;
+                width: 100%;
                 text-align: center;
             }
         }
@@ -358,10 +472,10 @@ try {
             </div>
             <div class="user-profile">
                 <div class="user-avatar">
-                    <?php echo strtoupper(substr($user['full_name'], 0, 1)); ?>
+                    <?php echo isset($user['full_name']) ? strtoupper(substr($user['full_name'], 0, 1)) : 'U'; ?>
                 </div>
                 <div class="user-details">
-                    <h4><?php echo htmlspecialchars($user['full_name']); ?></h4>
+                    <h4><?php echo isset($user['full_name']) ? htmlspecialchars($user['full_name']) : 'User'; ?></h4>
                     <p>Member</p>
                 </div>
             </div>
@@ -372,27 +486,27 @@ try {
                 <i class="fas fa-home"></i>
                 <span>Dashboard</span>
             </a>
-            <a href="profile.php">
+            <a href="user-profile.php">
                 <i class="fas fa-user"></i>
                 <span>My Profile</span>
             </a>
-            <a href="my-classes.php">
+            <a href="user-classes.php">
                 <i class="fas fa-calendar-alt"></i>
                 <span>My Classes</span>
             </a>
-            <a href="payments.php">
+            <a href="user-payments.php">
                 <i class="fas fa-credit-card"></i>
                 <span>Payments</span>
             </a>
-            <a href="success-stories.php">
+            <a href="user-stories.php">
                 <i class="fas fa-trophy"></i>
                 <span>Success Stories</span>
             </a>
-            <a href="book-class.php" class="active">
+            <a href="user-bookclass.php">
                 <i class="fas fa-plus-circle"></i>
                 <span>Book Class</span>
             </a>
-            <a href="contact.php">
+            <a href="user-contact.php">
                 <i class="fas fa-envelope"></i>
                 <span>Support</span>
             </a>
@@ -419,7 +533,7 @@ try {
                     <i class="fas fa-bell"></i>
                     <span class="notification-badge">3</span>
                 </button>
-                <button class="btn-primary" onclick="window.location.href='my-classes.php'">
+                <button class="btn-primary" onclick="window.location.href='user-classes.php'">
                     <i class="fas fa-calendar-check"></i>
                     My Classes
                 </button>
@@ -440,7 +554,7 @@ try {
                         <p>Available Classes</p>
                     </div>
                     <div class="stat">
-                        <h3><?php echo $member ? htmlspecialchars($member['MembershipPlan']) : 'No Plan'; ?></h3>
+                        <h3><?php echo isset($member['MembershipPlan']) ? htmlspecialchars($member['MembershipPlan']) : 'No Plan'; ?></h3>
                         <p>Your Plan</p>
                     </div>
                 </div>
@@ -448,6 +562,7 @@ try {
 
             <?php if($message): ?>
                 <div class="message <?php echo $success ? 'success' : 'error'; ?>">
+                    <i class="fas <?php echo $success ? 'fa-check-circle' : 'fa-exclamation-circle'; ?>"></i>
                     <?php echo htmlspecialchars($message); ?>
                 </div>
             <?php endif; ?>
@@ -461,9 +576,11 @@ try {
                         <select id="filterType" class="filter-select">
                             <option value="all">All Types</option>
                             <?php foreach($classTypes as $type): ?>
-                                <option value="<?php echo strtolower($type['class_type']); ?>">
-                                    <?php echo htmlspecialchars($type['class_type']); ?>
-                                </option>
+                                <?php if(!empty($type['class_type'])): ?>
+                                    <option value="<?php echo strtolower(preg_replace('/[^a-zA-Z]/', '', $type['class_type'])); ?>">
+                                        <?php echo htmlspecialchars($type['class_type']); ?>
+                                    </option>
+                                <?php endif; ?>
                             <?php endforeach; ?>
                         </select>
                     </div>
@@ -499,32 +616,35 @@ try {
                 <div class="class-grid" id="classesContainer">
                     <?php foreach($availableClasses as $class): 
                         $date = new DateTime($class['schedule']);
-                        $slots = $class['available_slots'];
+                        $slots = isset($class['available_slots']) ? $class['available_slots'] : ($class['max_capacity'] - $class['current_enrollment']);
+                        $capacity = isset($class['max_capacity']) ? $class['max_capacity'] : 10;
                         $slotClass = 'high';
-                        $percentage = ($slots / $class['capacity']) * 100;
+                        $percentage = ($slots / $capacity) * 100;
                         
                         if($percentage <= 25) {
                             $slotClass = 'low';
                         } elseif($percentage <= 50) {
                             $slotClass = 'moderate';
                         }
+                        
+                        $classType = isset($class['class_type']) ? strtolower(preg_replace('/[^a-zA-Z]/', '', $class['class_type'])) : 'others';
                     ?>
                         <div class="class-card" 
-                             data-type="<?php echo strtolower($class['class_type']); ?>"
+                             data-type="<?php echo $classType; ?>"
                              data-date="<?php echo $date->format('Y-m-d'); ?>"
                              data-time="<?php echo $date->format('H:i'); ?>">
                             <div class="class-card-header">
-                                <h3><?php echo htmlspecialchars($class['class_name']); ?></h3>
+                                <h3><?php echo isset($class['class_name']) ? htmlspecialchars($class['class_name']) : 'Class'; ?></h3>
                                 <div class="class-meta">
-                                    <span><i class="fas fa-user"></i> <?php echo htmlspecialchars($class['trainer_name']); ?></span>
+                                    <span><i class="fas fa-user"></i> <?php echo isset($class['trainer_name']) ? htmlspecialchars($class['trainer_name']) : 'Trainer'; ?></span>
                                     <span><i class="fas fa-clock"></i> <?php echo $date->format('g:i A'); ?></span>
                                 </div>
                             </div>
                             <div class="class-card-body">
                                 <div class="class-detail">
                                     <strong>Type:</strong>
-                                    <span class="class-tag <?php echo strtolower($class['class_type']); ?>">
-                                        <?php echo htmlspecialchars($class['class_type']); ?>
+                                    <span class="class-tag <?php echo $classType; ?>">
+                                        <?php echo isset($class['class_type']) ? htmlspecialchars($class['class_type']) : 'General'; ?>
                                     </span>
                                 </div>
                                 
@@ -535,23 +655,25 @@ try {
                                 
                                 <div class="class-detail">
                                     <strong>Duration:</strong>
-                                    <span><?php echo htmlspecialchars($class['duration']); ?> minutes</span>
+                                    <span><?php echo isset($class['duration']) ? htmlspecialchars($class['duration']) : (isset($class['duration_minutes']) ? $class['duration_minutes'] . ' min' : '60 min'); ?></span>
                                 </div>
                                 
                                 <div class="class-detail">
                                     <strong>Location:</strong>
-                                    <span><?php echo htmlspecialchars($class['location']); ?></span>
+                                    <span><?php echo isset($class['location']) ? htmlspecialchars($class['location']) : 'Main Studio'; ?></span>
                                 </div>
                                 
                                 <div class="class-detail">
                                     <strong>Intensity:</strong>
-                                    <span><?php echo htmlspecialchars($class['intensity_level']); ?></span>
+                                    <span><?php echo isset($class['intensity_level']) ? htmlspecialchars($class['intensity_level']) : (isset($class['difficulty_level']) ? $class['difficulty_level'] : 'Moderate'); ?></span>
                                 </div>
                                 
+                                <?php if(isset($class['description']) && !empty($class['description'])): ?>
                                 <div class="class-detail">
                                     <strong>Description:</strong>
                                     <span><?php echo htmlspecialchars($class['description']); ?></span>
                                 </div>
+                                <?php endif; ?>
                                 
                                 <div class="slots-info">
                                     <div>
@@ -559,11 +681,11 @@ try {
                                             <?php echo $slots; ?> slots available
                                         </span>
                                         <small style="display: block; color: var(--gray); font-size: 0.85rem;">
-                                            Total capacity: <?php echo $class['capacity']; ?>
+                                            Total capacity: <?php echo $capacity; ?>
                                         </small>
                                     </div>
                                     
-                                    <button type="button" class="btn-sm btn-book" 
+                                    <button type="button" class="btn-book" 
                                             data-class-id="<?php echo $class['id']; ?>"
                                             data-class-name="<?php echo htmlspecialchars($class['class_name']); ?>"
                                             data-class-time="<?php echo $date->format('F j, Y g:i A'); ?>">
@@ -600,12 +722,12 @@ try {
                     
                     <div class="form-group">
                         <label>Class:</label>
-                        <p id="modalClassName" style="color: var(--dark-color); font-weight: 600;"></p>
+                        <p id="modalClassName" style="color: var(--dark-color); font-weight: 600; margin: 5px 0;"></p>
                     </div>
                     
                     <div class="form-group">
                         <label>Time:</label>
-                        <p id="modalClassTime" style="color: var(--dark-color);"></p>
+                        <p id="modalClassTime" style="color: var(--dark-color); margin: 5px 0;"></p>
                     </div>
                     
                     <div class="form-group">
@@ -641,13 +763,17 @@ try {
                 const timeValue = filterTime.value;
                 const searchValue = searchInput.value.toLowerCase();
                 const today = new Date();
+                today.setHours(0, 0, 0, 0);
                 
                 classCards.forEach(card => {
                     const classType = card.getAttribute('data-type');
-                    const classDate = new Date(card.getAttribute('data-date'));
+                    const classDateStr = card.getAttribute('data-date');
                     const classTime = card.getAttribute('data-time');
                     const className = card.querySelector('h3').textContent.toLowerCase();
                     const trainerName = card.querySelector('.class-meta span:first-child').textContent.toLowerCase();
+                    
+                    const classDate = new Date(classDateStr);
+                    classDate.setHours(0, 0, 0, 0);
                     
                     let show = true;
                     
@@ -658,7 +784,7 @@ try {
                     
                     // Date filter
                     if(dateValue !== 'all') {
-                        const diffTime = classDate - today;
+                        const diffTime = classDate.getTime() - today.getTime();
                         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
                         
                         switch(dateValue) {
@@ -791,6 +917,18 @@ try {
             justify-content: flex-end;
             gap: 1rem;
             margin-top: 2rem;
+        }
+        
+        .close-btn {
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: var(--gray);
+        }
+        
+        .close-btn:hover {
+            color: var(--dark-color);
         }
     </style>
 </body>

@@ -58,27 +58,33 @@ CREATE TABLE trainers (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- Classes table
+-- Classes table - UPDATED WITH ALL COLUMNS
 CREATE TABLE classes (
     id INT(11) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     class_name VARCHAR(100) NOT NULL,
     trainer_id INT(11) UNSIGNED,
     schedule DATETIME NOT NULL,
     duration_minutes INT NOT NULL,
+    duration VARCHAR(20),
     max_capacity INT NOT NULL,
+    location VARCHAR(100),
     current_enrollment INT DEFAULT 0,
-    class_type ENUM('yoga', 'hiit', 'strength', 'cardio', 'crossfit', 'others'),
-    difficulty_level ENUM('beginner', 'intermediate', 'advanced'),
+    class_type VARCHAR(50),
+    difficulty_level VARCHAR(50),
+    intensity_level VARCHAR(50),
+    description TEXT,
+    status ENUM('active', 'inactive', 'cancelled') DEFAULT 'active',
     FOREIGN KEY (trainer_id) REFERENCES trainers(id) ON DELETE SET NULL
 );
 
--- Bookings table
+-- Bookings table - UPDATED
 CREATE TABLE bookings (
     id INT(11) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     user_id INT(11) UNSIGNED,
     class_id INT(11) UNSIGNED,
     booking_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    status ENUM('confirmed', 'cancelled', 'attended', 'no-show'),
+    notes TEXT,
+    status ENUM('pending', 'confirmed', 'cancelled', 'attended', 'no-show') DEFAULT 'pending',
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE
 );
@@ -119,10 +125,7 @@ CREATE TABLE contact_messages (
     status ENUM('new', 'read', 'replied', 'closed') DEFAULT 'new'
 );
 
--- Insert sample data with PROPER password hash (password: "password123")
--- This hash is verified to work: $2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi
--- Note: This is actually for "password" not "password123"
--- Let's use a simple password for testing: "password"
+-- Insert sample data with proper password hash (password: "password")
 INSERT INTO users (username, email, password_hash, full_name, user_type, is_active) VALUES
 ('admin', 'admin@conquergym.com', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'Administrator', 'admin', 1),
 ('markj', 'mark@conquergym.com', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'Mark Johnson', 'trainer', 1),
@@ -140,20 +143,22 @@ INSERT INTO trainers (user_id, specialty, certification, years_experience, bio, 
 (2, 'Strength & Conditioning', 'NASM Certified, CrossFit Level 2', 10, 'Former professional athlete with 10+ years training experience', 4.8, 50),
 (3, 'Yoga & Mobility', 'RYT 500, ACE Certified', 8, 'Specialized in yoga therapy and mobility training', 4.9, 45);
 
--- Insert sample classes
-INSERT INTO classes (class_name, trainer_id, schedule, duration_minutes, max_capacity, current_enrollment, class_type, difficulty_level) VALUES
-('Morning Yoga', 2, DATE_ADD(NOW(), INTERVAL 1 DAY), 60, 20, 15, 'yoga', 'beginner'),
-('HIIT Blast', 1, DATE_ADD(NOW(), INTERVAL 2 DAY), 45, 15, 12, 'hiit', 'intermediate'),
-('Strength Training', 2, DATE_ADD(NOW(), INTERVAL 3 DAY), 60, 10, 8, 'strength', 'advanced'),
-('Cardio Kickboxing', 1, DATE_ADD(NOW(), INTERVAL 4 DAY), 50, 25, 20, 'cardio', 'intermediate'),
-('CrossFit WOD', 2, DATE_ADD(NOW(), INTERVAL 5 DAY), 60, 15, 10, 'crossfit', 'advanced');
+-- Insert sample classes with all columns
+INSERT INTO classes (class_name, trainer_id, schedule, duration_minutes, duration, max_capacity, location, current_enrollment, class_type, difficulty_level, intensity_level, description, status) VALUES
+('Morning Yoga', 2, DATE_ADD(NOW(), INTERVAL 1 DAY), 60, '60 min', 20, 'Yoga Studio', 15, 'Yoga', 'Beginner', 'Low', 'Start your day with peaceful yoga stretches and breathing exercises', 'active'),
+('HIIT Blast', 1, DATE_ADD(NOW(), INTERVAL 2 DAY), 45, '45 min', 15, 'Main Studio', 12, 'HIIT', 'Intermediate', 'High', 'High-intensity interval training for maximum calorie burn', 'active'),
+('Strength Training', 2, DATE_ADD(NOW(), INTERVAL 3 DAY), 60, '60 min', 10, 'Weight Room', 8, 'Strength', 'Advanced', 'Medium', 'Build muscle and strength with compound exercises', 'active'),
+('Cardio Kickboxing', 1, DATE_ADD(NOW(), INTERVAL 4 DAY), 50, '50 min', 25, 'Main Studio', 20, 'Cardio', 'Intermediate', 'High', 'Fun cardio workout combining kickboxing moves', 'active'),
+('CrossFit WOD', 2, DATE_ADD(NOW(), INTERVAL 5 DAY), 60, '60 min', 15, 'CrossFit Area', 10, 'CrossFit', 'Advanced', 'High', 'Daily CrossFit workout of the day', 'active'),
+('Evening Pilates', 1, DATE_ADD(NOW(), INTERVAL 6 DAY), 55, '55 min', 12, 'Pilates Studio', 5, 'Pilates', 'Beginner', 'Low', 'Core strengthening and flexibility training', 'active');
 
 -- Insert sample bookings
-INSERT INTO bookings (user_id, class_id, status) VALUES
-(4, 1, 'confirmed'),
-(4, 2, 'confirmed'),
-(5, 3, 'confirmed'),
-(6, 4, 'confirmed');
+INSERT INTO bookings (user_id, class_id, notes, status) VALUES
+(4, 1, 'First time trying yoga', 'confirmed'),
+(4, 2, 'Bring water bottle', 'confirmed'),
+(5, 3, 'Need modifications for back', 'confirmed'),
+(6, 4, 'Regular attendee', 'confirmed'),
+(4, 5, NULL, 'pending');
 
 -- Insert sample payments
 INSERT INTO payments (user_id, amount, payment_method, status, subscription_period) VALUES
@@ -161,13 +166,13 @@ INSERT INTO payments (user_id, amount, payment_method, status, subscription_peri
 (5, 79.99, 'debit_card', 'completed', 'Monthly'),
 (6, 29.99, 'paypal', 'completed', 'Monthly'),
 (4, 49.99, 'credit_card', 'completed', 'Monthly'),
-(5, 79.99, 'debit_card', 'completed', 'Monthly');
+(5, 79.99, 'debit_card', 'pending', 'Monthly');
 
 -- Insert sample success stories
 INSERT INTO success_stories (user_id, title, story_text, weight_loss, months_taken, trainer_id, approved) VALUES
-(4, 'Lost 50lbs in 6 months!', 'Thanks to CONQUER Gym and my amazing trainer Mark, I transformed my life...', 50.5, 6, 2, 1),
-(5, 'From Couch to 5K in 3 months', 'Sarah helped me build confidence and stamina I never knew I had...', 30.2, 3, 3, 1),
-(6, 'Gained Strength, Lost Body Fat', 'The combination of strength training and proper nutrition changed everything...', 25.7, 4, 2, 1);
+(4, 'Lost 50lbs in 6 months!', 'Thanks to CONQUER Gym and my amazing trainer Mark, I transformed my life... Starting at 220lbs and now down to 170lbs!', 50.5, 6, 2, 1),
+(5, 'From Couch to 5K in 3 months', 'Sarah helped me build confidence and stamina I never knew I had... Now I run 5K every morning!', 30.2, 3, 3, 1),
+(6, 'Gained Strength, Lost Body Fat', 'The combination of strength training and proper nutrition changed everything... Added 20lbs of muscle while losing fat!', 25.7, 4, 2, 1);
 
 -- Insert sample equipment
 INSERT INTO equipment (equipment_name, brand, purchase_date, last_maintenance, next_maintenance, status, location) VALUES
@@ -188,6 +193,7 @@ CREATE INDEX idx_users_email ON users(email);
 CREATE INDEX idx_users_username ON users(username);
 CREATE INDEX idx_stories_featured ON success_stories(is_featured, approved);
 CREATE INDEX idx_classes_schedule ON classes(schedule);
+CREATE INDEX idx_classes_type ON classes(class_type);
 CREATE INDEX idx_payments_user ON payments(user_id, payment_date);
 CREATE INDEX idx_bookings_user ON bookings(user_id, status);
 CREATE INDEX idx_bookings_class ON bookings(class_id);
