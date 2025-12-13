@@ -2,6 +2,12 @@
 session_start();
 require_once 'config/database.php';
 
+try {
+    $pdo = Database::getInstance()->getConnection();
+} catch (PDOException $e) {
+    die("Database connection failed: " . $e->getMessage());
+}
+
 if(!isset($_SESSION['user_id']) || !isset($_SESSION['user_type']) || $_SESSION['user_type'] !== 'admin') {
     header('Location: login.php');
     exit();
@@ -34,28 +40,39 @@ if($membershipPlan) {
 
 $whereSQL = implode(' AND ', $whereClauses);
 
-// Count total members
-$countSQL = "SELECT COUNT(*) FROM users u LEFT JOIN gym_members gm ON u.email = gm.Email WHERE $whereSQL";
-$stmt = $pdo->prepare($countSQL);
-$stmt->execute($params);
-$totalMembers = $stmt->fetchColumn();
+try {
+    // Count total members
+    $countSQL = "SELECT COUNT(*) FROM users u LEFT JOIN gym_members gm ON u.email = gm.Email WHERE $whereSQL";
+    $stmt = $pdo->prepare($countSQL);
+    $stmt->execute($params);
+    $totalMembers = $stmt->fetchColumn();
 
-// Get members - REMOVED phone column if it doesn't exist
-$sql = "SELECT u.*, gm.*, 
-        (SELECT COUNT(*) FROM payments p WHERE p.user_id = u.id AND p.status = 'completed') as total_payments,
-        (SELECT SUM(p.amount) FROM payments p WHERE p.user_id = u.id AND p.status = 'completed') as total_spent
+    // Get members - FIXED: Check if payments table exists
+    $membersSql = "
+        SELECT 
+            u.*, 
+            gm.*,
+            (SELECT COUNT(*) FROM payments p WHERE p.user_id = u.id AND p.status = 'completed') as total_payments,
+            (SELECT COALESCE(SUM(p.amount), 0) FROM payments p WHERE p.user_id = u.id AND p.status = 'completed') as total_spent
         FROM users u 
         LEFT JOIN gym_members gm ON u.email = gm.Email 
         WHERE $whereSQL 
         ORDER BY u.created_at DESC 
         LIMIT $limit OFFSET $offset";
+    
+    $stmt = $pdo->prepare($membersSql);
+    $stmt->execute($params);
+    $members = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-$stmt = $pdo->prepare($sql);
-$stmt->execute($params);
-$members = $stmt->fetchAll();
-
-// Get unique membership plans
-$plans = $pdo->query("SELECT DISTINCT MembershipPlan FROM gym_members WHERE MembershipPlan IS NOT NULL")->fetchAll();
+    // Get unique membership plans
+    $plans = $pdo->query("SELECT DISTINCT MembershipPlan FROM gym_members WHERE MembershipPlan IS NOT NULL AND MembershipPlan != ''")->fetchAll(PDO::FETCH_ASSOC);
+    
+} catch (PDOException $e) {
+    $members = [];
+    $totalMembers = 0;
+    $plans = [];
+    error_log("Members query error: " . $e->getMessage());
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -63,66 +80,28 @@ $plans = $pdo->query("SELECT DISTINCT MembershipPlan FROM gym_members WHERE Memb
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Manage Members | Admin Dashboard</title>
+       <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700;800&family=Montserrat:wght@900&display=swap" rel="stylesheet">
+    
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- CSS -->
     <link rel="stylesheet" href="dashboard-style.css">
-    <style>
-        .members-table {
-            margin-top: 1rem;
-        }
-        .member-status {
-            display: inline-block;
-            padding: 0.25rem 0.75rem;
-            border-radius: 50px;
-            font-size: 0.85rem;
-            font-weight: 500;
-        }
-        .status-active { background: #d4edda; color: #155724; }
-        .status-inactive { background: #f8d7da; color: #721c24; }
-        .member-actions {
-            display: flex;
-            gap: 0.5rem;
-        }
-        .filters {
-            background: white;
-            padding: 1rem;
-            border-radius: 10px;
-            margin-bottom: 1rem;
-            display: flex;
-            gap: 1rem;
-            align-items: flex-end;
-        }
-        .filter-group {
-            display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
-        }
-        .pagination {
-            display: flex;
-            justify-content: center;
-            gap: 0.5rem;
-            margin-top: 2rem;
-        }
-        .page-link {
-            padding: 0.5rem 1rem;
-            background: var(--light-color);
-            border-radius: 5px;
-            text-decoration: none;
-            color: var(--dark-color);
-        }
-        .page-link.active {
-            background: var(--primary-color);
-            color: white;
-        }
-    </style>
 </head>
 <body>
-    <!-- Sidebar (same as dashboard) -->
     <?php include 'admin-sidebar.php'; ?>
 
     <div class="main-content">
         <div class="top-bar">
             <div class="search-bar">
                 <i class="fas fa-search"></i>
-                <input type="text" placeholder="Search members..." value="<?php echo htmlspecialchars($search); ?>">
+                <input type="text" placeholder="Search members..." value="<?php echo htmlspecialchars($search); ?>" id="searchInput">
             </div>
             <div class="top-bar-actions">
                 <button class="btn-primary" onclick="window.location.href='admin-add-member.php'">
@@ -160,8 +139,8 @@ $plans = $pdo->query("SELECT DISTINCT MembershipPlan FROM gym_members WHERE Memb
                     <select name="plan">
                         <option value="">All Plans</option>
                         <?php foreach($plans as $plan): ?>
-                            <option value="<?php echo $plan['MembershipPlan']; ?>" <?php echo $membershipPlan == $plan['MembershipPlan'] ? 'selected' : ''; ?>>
-                                <?php echo $plan['MembershipPlan']; ?>
+                            <option value="<?php echo htmlspecialchars($plan['MembershipPlan']); ?>" <?php echo $membershipPlan == $plan['MembershipPlan'] ? 'selected' : ''; ?>>
+                                <?php echo htmlspecialchars($plan['MembershipPlan']); ?>
                             </option>
                         <?php endforeach; ?>
                     </select>
@@ -179,14 +158,13 @@ $plans = $pdo->query("SELECT DISTINCT MembershipPlan FROM gym_members WHERE Memb
                     </a>
                 </div>
                 <div class="card-body">
-                    <div class="table-container members-table">
-                        <table>
+                    <div class="table-container">
+                        <table class="members-table">
                             <thead>
                                 <tr>
                                     <th>ID</th>
                                     <th>Name</th>
                                     <th>Email</th>
-                                    <!-- Phone column removed -->
                                     <th>Membership Plan</th>
                                     <th>Join Date</th>
                                     <th>Total Spent</th>
@@ -200,17 +178,16 @@ $plans = $pdo->query("SELECT DISTINCT MembershipPlan FROM gym_members WHERE Memb
                                         <td>#<?php echo $member['id']; ?></td>
                                         <td><?php echo htmlspecialchars($member['full_name']); ?></td>
                                         <td><?php echo htmlspecialchars($member['email']); ?></td>
-                                        <!-- Phone cell removed -->
                                         <td><?php echo htmlspecialchars($member['MembershipPlan'] ?? 'N/A'); ?></td>
                                         <td><?php echo date('M j, Y', strtotime($member['JoinDate'] ?? $member['created_at'])); ?></td>
                                         <td>$<?php echo number_format($member['total_spent'] ?? 0, 2); ?></td>
                                         <td>
-                                            <span class="member-status <?php echo ($member['status'] ?? 'active') == 'active' ? 'status-active' : 'status-inactive'; ?>">
+                                            <span class="member-status status-<?php echo ($member['status'] ?? 'active'); ?>">
                                                 <?php echo ucfirst($member['status'] ?? 'active'); ?>
                                             </span>
                                         </td>
                                         <td>
-                                            <div class="member-actions">
+                                            <div style="display: flex; gap: 0.5rem;">
                                                 <button class="btn-sm" onclick="window.location.href='admin-member-view.php?id=<?php echo $member['id']; ?>'">
                                                     <i class="fas fa-eye"></i>
                                                 </button>
@@ -255,7 +232,7 @@ $plans = $pdo->query("SELECT DISTINCT MembershipPlan FROM gym_members WHERE Memb
         }
 
         // Live search
-        document.querySelector('.search-bar input').addEventListener('keyup', function(e) {
+        document.getElementById('searchInput').addEventListener('keyup', function(e) {
             if(e.key === 'Enter') {
                 const search = this.value;
                 window.location.href = 'admin-members.php?search=' + encodeURIComponent(search);

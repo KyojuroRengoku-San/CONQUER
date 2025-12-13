@@ -2,20 +2,37 @@
 session_start();
 require_once 'config/database.php';
 
+try {
+    $pdo = Database::getInstance()->getConnection();
+} catch (PDOException $e) {
+    die("Database connection failed: " . $e->getMessage());
+}
+
 if(!isset($_SESSION['user_id']) || !isset($_SESSION['user_type']) || $_SESSION['user_type'] !== 'admin') {
     header('Location: login.php');
     exit();
 }
 
-// Get dashboard statistics
+// Initialize all variables with defaults
+$totalMembers = 0;
+$totalTrainers = 0;
+$totalClasses = 0;
+$totalRevenue = 0;
+$recentMembers = [];
+$recentPayments = [];
+$upcomingClasses = [];
+$maintenanceNeeded = [];
+$pendingStories = 0;
+$revenueData = [];
+
 try {
-    // Total counts
-    $totalMembers = $pdo->query("SELECT COUNT(*) FROM users WHERE user_type = 'member'")->fetchColumn();
-    $totalTrainers = $pdo->query("SELECT COUNT(*) FROM trainers")->fetchColumn();
-    $totalClasses = $pdo->query("SELECT COUNT(*) FROM classes")->fetchColumn();
-    $totalRevenue = $pdo->query("SELECT SUM(amount) FROM payments WHERE status = 'completed'")->fetchColumn();
+    // Total counts with error handling
+    $totalMembers = $pdo->query("SELECT COUNT(*) FROM users WHERE user_type = 'member'")->fetchColumn() ?: 0;
+    $totalTrainers = $pdo->query("SELECT COUNT(*) FROM trainers")->fetchColumn() ?: 0;
+    $totalClasses = $pdo->query("SELECT COUNT(*) FROM classes")->fetchColumn() ?: 0;
+    $totalRevenue = $pdo->query("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status = 'completed'")->fetchColumn() ?: 0;
     
-    // Recent members
+    // Recent members with safe query
     $recentMembers = $pdo->query("
         SELECT u.*, gm.MembershipPlan, gm.JoinDate 
         FROM users u 
@@ -23,26 +40,31 @@ try {
         WHERE u.user_type = 'member' 
         ORDER BY u.created_at DESC 
         LIMIT 5
-    ")->fetchAll();
+    ")->fetchAll(PDO::FETCH_ASSOC);
     
-    // Recent payments
-    $recentPayments = $pdo->query("
-        SELECT p.*, u.full_name 
-        FROM payments p 
-        JOIN users u ON p.user_id = u.id 
-        ORDER BY p.payment_date DESC 
-        LIMIT 5
-    ")->fetchAll();
+    // Recent payments - check if payments table exists
+    try {
+        $recentPayments = $pdo->query("
+            SELECT p.*, u.full_name 
+            FROM payments p 
+            JOIN users u ON p.user_id = u.id 
+            ORDER BY p.payment_date DESC 
+            LIMIT 5
+        ")->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Exception $e) {
+        $recentPayments = [];
+    }
     
-    // Upcoming classes
+    // Upcoming classes - fixed table joins
     $upcomingClasses = $pdo->query("
-        SELECT c.*, u.full_name as trainer_name 
+        SELECT c.*, COALESCE(u.full_name, 'Trainer') as trainer_name 
         FROM classes c 
-        JOIN users u ON c.trainer_id = u.id 
+        LEFT JOIN trainers t ON c.trainer_id = t.id 
+        LEFT JOIN users u ON t.user_id = u.id 
         WHERE c.schedule > NOW() 
         ORDER BY c.schedule ASC 
         LIMIT 5
-    ")->fetchAll();
+    ")->fetchAll(PDO::FETCH_ASSOC);
     
     // Equipment needing maintenance
     $maintenanceNeeded = $pdo->query("
@@ -50,27 +72,34 @@ try {
         WHERE status = 'maintenance' 
         OR next_maintenance <= DATE_ADD(NOW(), INTERVAL 7 DAY) 
         LIMIT 5
-    ")->fetchAll();
+    ")->fetchAll(PDO::FETCH_ASSOC);
     
     // Pending success stories
-    $pendingStories = $pdo->query("
-        SELECT COUNT(*) FROM success_stories WHERE approved = 0
-    ")->fetchColumn();
+    try {
+        $pendingStories = $pdo->query("SELECT COUNT(*) FROM success_stories WHERE approved = 0")->fetchColumn() ?: 0;
+    } catch (Exception $e) {
+        $pendingStories = 0;
+    }
     
-    // Monthly revenue data (last 6 months)
-    $revenueData = $pdo->query("
-        SELECT 
-            DATE_FORMAT(payment_date, '%Y-%m') as month,
-            SUM(amount) as revenue
-        FROM payments 
-        WHERE payment_date >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
-        AND status = 'completed'
-        GROUP BY DATE_FORMAT(payment_date, '%Y-%m')
-        ORDER BY month ASC
-    ")->fetchAll();
+    // Monthly revenue data (last 6 months) - with error handling
+    try {
+        $revenueData = $pdo->query("
+            SELECT 
+                DATE_FORMAT(payment_date, '%Y-%m') as month,
+                COALESCE(SUM(amount), 0) as revenue
+            FROM payments 
+            WHERE payment_date >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
+            AND status = 'completed'
+            GROUP BY DATE_FORMAT(payment_date, '%Y-%m')
+            ORDER BY month ASC
+        ")->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Exception $e) {
+        $revenueData = [];
+    }
     
 } catch(PDOException $e) {
-    die("Database error: " . $e->getMessage());
+    // Log error but don't die - show empty dashboard
+    error_log("Dashboard error: " . $e->getMessage());
 }
 ?>
 <!DOCTYPE html>
@@ -93,86 +122,7 @@ try {
     
     <!-- CSS -->
     <link rel="stylesheet" href="dashboard-style.css">
-    <style>
-        .revenue-chart {
-            background: white;
-            border-radius: 15px;
-            padding: 1.5rem;
-            margin-top: 1.5rem;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-        }
-        
-        .alert-badge {
-            background: #ff4757;
-            color: white;
-            padding: 0.25rem 0.75rem;
-            border-radius: 50px;
-            font-size: 0.8rem;
-            font-weight: 600;
-        }
-        
-        .admin-actions {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 1rem;
-            margin-top: 1rem;
-        }
-        
-        .admin-action-btn {
-            background: var(--light-color);
-            border: 1px solid var(--border-color);
-            border-radius: 10px;
-            padding: 1rem;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 0.5rem;
-            color: var(--dark-color);
-            text-decoration: none;
-        }
-        
-        .admin-action-btn:hover {
-            background: var(--primary-color);
-            color: white;
-            transform: translateY(-3px);
-            border-color: var(--primary-color);
-        }
-        
-        .admin-action-btn i {
-            font-size: 1.5rem;
-        }
-        
-        .admin-action-btn span {
-            font-size: 0.9rem;
-            font-weight: 500;
-        }
-        
-        .system-health {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-top: 1rem;
-            padding: 1rem;
-            background: var(--light-color);
-            border-radius: 10px;
-        }
-        
-        .health-item {
-            text-align: center;
-        }
-        
-        .health-item i {
-            font-size: 1.5rem;
-            margin-bottom: 0.5rem;
-        }
-        
-        .health-item.good i { color: #2ed573; }
-        .health-item.warning i { color: #ffa502; }
-        .health-item.danger i { color: #ff4757; }
-    </style>
+ 
 </head>
 <body>
     <!-- Sidebar -->

@@ -2,48 +2,60 @@
 session_start();
 require_once 'config/database.php';
 
+try {
+    $pdo = Database::getInstance()->getConnection();
+} catch (PDOException $e) {
+    die("Database connection failed: " . $e->getMessage());
+}
+
 if(!isset($_SESSION['user_id']) || !isset($_SESSION['user_type']) || $_SESSION['user_type'] !== 'admin') {
     header('Location: login.php');
     exit();
 }
 
+// Initialize variables
+$success = '';
+$error = '';
+
 // Handle form submissions
 if($_SERVER['REQUEST_METHOD'] === 'POST') {
     if(isset($_POST['save_general'])) {
-        // For now, store in session or file since we don't have settings table
+        // Store settings in database if you have a settings table
+        // For now, store in session
         $_SESSION['gym_settings'] = [
-            'gym_name' => $_POST['gym_name'],
-            'gym_address' => $_POST['gym_address'],
-            'contact_email' => $_POST['contact_email'],
-            'contact_phone' => $_POST['contact_phone']
+            'gym_name' => htmlspecialchars($_POST['gym_name']),
+            'gym_address' => htmlspecialchars($_POST['gym_address']),
+            'contact_email' => filter_var($_POST['contact_email'], FILTER_SANITIZE_EMAIL),
+            'contact_phone' => htmlspecialchars($_POST['contact_phone'])
         ];
         $success = "General settings updated successfully! (Note: Stored in session only)";
     }
     
-    if(isset($_POST['save_business'])) {
-        $_SESSION['business_hours'] = $_POST['hours'];
-        $success = "Business hours updated successfully! (Note: Stored in session only)";
-    }
-    
-    if(isset($_POST['save_membership'])) {
-        $_SESSION['membership_plans'] = $_POST['plans'];
-        $success = "Membership plans updated successfully! (Note: Stored in session only)";
-    }
-    
     if(isset($_POST['change_password'])) {
-        // Change admin password
-        if($_POST['new_password'] === $_POST['confirm_password']) {
-            $hashedPassword = password_hash($_POST['new_password'], PASSWORD_DEFAULT);
-            $stmt = $pdo->prepare("UPDATE users SET password_hash = ? WHERE id = ?");
-            $stmt->execute([$hashedPassword, $_SESSION['user_id']]);
-            $success = "Password changed successfully!";
-        } else {
+        // Change admin password with validation
+        $newPassword = $_POST['new_password'] ?? '';
+        $confirmPassword = $_POST['confirm_password'] ?? '';
+        
+        if(empty($newPassword) || empty($confirmPassword)) {
+            $error = "Password fields cannot be empty!";
+        } elseif($newPassword !== $confirmPassword) {
             $error = "Passwords do not match!";
+        } elseif(strlen($newPassword) < 8) {
+            $error = "Password must be at least 8 characters long!";
+        } else {
+            try {
+                $hashedPassword = password_hash($newPassword, PASSWORD_DEFAULT);
+                $stmt = $pdo->prepare("UPDATE users SET password_hash = ? WHERE id = ?");
+                $stmt->execute([$hashedPassword, $_SESSION['user_id']]);
+                $success = "Password changed successfully!";
+            } catch (PDOException $e) {
+                $error = "Failed to change password: " . $e->getMessage();
+            }
         }
     }
 }
 
-// Load current settings from session or use defaults
+// Load settings with defaults
 $gymName = $_SESSION['gym_settings']['gym_name'] ?? 'CONQUER Gym';
 $gymAddress = $_SESSION['gym_settings']['gym_address'] ?? '';
 $contactEmail = $_SESSION['gym_settings']['contact_email'] ?? 'admin@conquergym.com';
@@ -64,127 +76,26 @@ $membershipPlans = $_SESSION['membership_plans'] ?? [
     'Premium' => ['price' => 79.99, 'features' => ['All Basic features', 'Group classes access', 'Personal trainer consultation']],
     'Ultimate' => ['price' => 119.99, 'features' => ['All Premium features', 'Unlimited classes', 'Nutrition planning', 'Monthly body analysis']]
 ];
-?>
+?>  
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Settings | Admin Dashboard</title>
+       <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700;800&family=Montserrat:wght@900&display=swap" rel="stylesheet">
+    
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- CSS -->
     <link rel="stylesheet" href="dashboard-style.css">
-    <style>
-        .settings-container {
-            max-width: 1000px;
-            margin: 0 auto;
-        }
-        .settings-tabs {
-            display: flex;
-            gap: 0.5rem;
-            margin-bottom: 1.5rem;
-            padding: 0.5rem;
-            background: white;
-            border-radius: 10px;
-            overflow-x: auto;
-        }
-        .settings-tab {
-            padding: 0.75rem 1.5rem;
-            border: none;
-            background: transparent;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: 500;
-            white-space: nowrap;
-        }
-        .settings-tab.active {
-            background: var(--primary-color);
-            color: white;
-        }
-        .settings-content {
-            display: none;
-            background: white;
-            padding: 2rem;
-            border-radius: 15px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-        }
-        .settings-content.active {
-            display: block;
-        }
-        .settings-form {
-            display: flex;
-            flex-direction: column;
-            gap: 1.5rem;
-        }
-        .form-group {
-            display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
-        }
-        .form-group label {
-            font-weight: 600;
-            color: var(--dark-color);
-        }
-        .form-group input,
-        .form-group textarea,
-        .form-group select {
-            padding: 0.75rem;
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            font-size: 1rem;
-        }
-        .form-group textarea {
-            min-height: 120px;
-            resize: vertical;
-        }
-        .form-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 1rem;
-        }
-        .hours-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 1rem;
-            margin-top: 1rem;
-        }
-        .hour-item {
-            background: #f8f9fa;
-            padding: 1rem;
-            border-radius: 8px;
-        }
-        .plan-card {
-            background: #f8f9fa;
-            padding: 1.5rem;
-            border-radius: 10px;
-            margin-bottom: 1rem;
-        }
-        .feature-list {
-            list-style: none;
-            padding: 0;
-            margin: 1rem 0;
-        }
-        .feature-list li {
-            padding: 0.5rem 0;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        .feature-list li:before {
-            content: '✓';
-            color: #2ed573;
-            font-weight: bold;
-        }
-        .danger-zone {
-            border: 2px solid #ff4757;
-            border-radius: 10px;
-            padding: 1.5rem;
-            margin-top: 2rem;
-            background: #fff5f5;
-        }
-        .danger-zone h3 {
-            color: #ff4757;
-            margin-bottom: 1rem;
-        }
-    </style>
 </head>
 <body>
     <?php include 'admin-sidebar.php'; ?>

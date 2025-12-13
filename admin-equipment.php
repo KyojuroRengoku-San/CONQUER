@@ -1,6 +1,13 @@
 <?php
 session_start();
+// FIXED: Added proper database connection
 require_once 'config/database.php';
+
+try {
+    $pdo = Database::getInstance()->getConnection();
+} catch (PDOException $e) {
+    die("Database connection failed: " . $e->getMessage());
+}
 
 if(!isset($_SESSION['user_id']) || !isset($_SESSION['user_type']) || $_SESSION['user_type'] !== 'admin') {
     header('Location: login.php');
@@ -24,24 +31,31 @@ if($location) {
     $params[] = $location;
 }
 
-$whereSQL = $whereClauses ? 'WHERE ' . implode(' AND ', $whereClauses) : '';
+$whereSQL = !empty($whereClauses) ? 'WHERE ' . implode(' AND ', $whereClauses) : '';
 
-$equipment = $pdo->prepare("
-    SELECT * FROM equipment
-    $whereSQL
-    ORDER BY 
-        CASE WHEN status = 'maintenance' THEN 1
-             WHEN next_maintenance <= DATE_ADD(NOW(), INTERVAL 7 DAY) THEN 2
-             ELSE 3 END,
-        next_maintenance ASC
-");
-$equipment->execute($params);
-$equipment = $equipment->fetchAll();
-
-// Stats
-$totalEquipment = $pdo->query("SELECT COUNT(*) FROM equipment")->fetchColumn();
-$needsMaintenance = $pdo->query("SELECT COUNT(*) FROM equipment WHERE status = 'maintenance' OR next_maintenance <= DATE_ADD(NOW(), INTERVAL 7 DAY)")->fetchColumn();
-$locations = $pdo->query("SELECT DISTINCT location FROM equipment WHERE location IS NOT NULL")->fetchAll();
+try {
+    $stmt = $pdo->prepare("
+        SELECT * FROM equipment
+        $whereSQL
+        ORDER BY 
+            CASE 
+                WHEN status = 'maintenance' THEN 1
+                WHEN next_maintenance <= DATE_ADD(NOW(), INTERVAL 7 DAY) THEN 2
+                ELSE 3 
+            END,
+            next_maintenance ASC
+    ");
+    $stmt->execute($params);
+    $equipment = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    // Stats
+    $totalEquipment = $pdo->query("SELECT COUNT(*) FROM equipment")->fetchColumn();
+    $needsMaintenance = $pdo->query("SELECT COUNT(*) FROM equipment WHERE status = 'maintenance' OR next_maintenance <= DATE_ADD(NOW(), INTERVAL 7 DAY)")->fetchColumn();
+    $locations = $pdo->query("SELECT DISTINCT location FROM equipment WHERE location IS NOT NULL AND location != ''")->fetchAll(PDO::FETCH_ASSOC);
+    
+} catch (PDOException $e) {
+    die("Database error: " . $e->getMessage());
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -49,40 +63,19 @@ $locations = $pdo->query("SELECT DISTINCT location FROM equipment WHERE location
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Equipment Management | Admin Dashboard</title>
+        <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700;800&family=Montserrat:wght@900&display=swap" rel="stylesheet">
+    
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- CSS -->
     <link rel="stylesheet" href="dashboard-style.css">
-    <style>
-        .equipment-table .equipment-status {
-            display: inline-block;
-            padding: 0.25rem 0.75rem;
-            border-radius: 50px;
-            font-size: 0.85rem;
-            font-weight: 500;
-        }
-        .status-operational { background: #d4edda; color: #155724; }
-        .status-maintenance { background: #fff3cd; color: #856404; }
-        .status-outofservice { background: #f8d7da; color: #721c24; }
-        
-        .maintenance-indicator {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            display: inline-block;
-            margin-right: 0.5rem;
-        }
-        .indicator-good { background: #2ed573; }
-        .indicator-warning { background: #ffa502; }
-        .indicator-danger { background: #ff4757; }
-        
-        .equipment-filters {
-            display: flex;
-            gap: 1rem;
-            align-items: flex-end;
-            margin-bottom: 1rem;
-            padding: 1rem;
-            background: white;
-            border-radius: 10px;
-        }
-    </style>
 </head>
 <body>
     <?php include 'admin-sidebar.php'; ?>
@@ -134,8 +127,8 @@ $locations = $pdo->query("SELECT DISTINCT location FROM equipment WHERE location
                     <select name="location">
                         <option value="">All Locations</option>
                         <?php foreach($locations as $loc): ?>
-                            <option value="<?php echo $loc['location']; ?>" <?php echo $location === $loc['location'] ? 'selected' : ''; ?>>
-                                <?php echo $loc['location']; ?>
+                            <option value="<?php echo htmlspecialchars($loc['location']); ?>" <?php echo $location === $loc['location'] ? 'selected' : ''; ?>>
+                                <?php echo htmlspecialchars($loc['location']); ?>
                             </option>
                         <?php endforeach; ?>
                     </select>
@@ -150,8 +143,8 @@ $locations = $pdo->query("SELECT DISTINCT location FROM equipment WHERE location
                     <h3>Equipment Inventory</h3>
                 </div>
                 <div class="card-body">
-                    <div class="table-container equipment-table">
-                        <table>
+                    <div class="table-container">
+                        <table class="equipment-table">
                             <thead>
                                 <tr>
                                     <th>Equipment</th>

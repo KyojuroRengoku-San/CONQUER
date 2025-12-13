@@ -1,44 +1,45 @@
 <?php
 // config/database.php
-// Database configuration
-$host = 'localhost';
-$dbname = 'conquer_gym';
-$username = 'root';
-$password = '';
-
-// Create connection using PDO
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname", $username, $password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+class Database {
+    private static $instance = null;
+    private $connection;
     
-    // Set default fetch mode
-    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+    private function __construct() {
+        // Use these exact values based on your conquer_gym.sql
+        $host = 'localhost';
+        $dbname = 'conquer_gym'; // Changed from 'your_database_name'
+        $username = 'root'; // Default for XAMPP/WAMP
+        $password = ''; // Default for XAMPP/WAMP (empty)
+        
+        try {
+            $this->connection = new PDO(
+                "mysql:host=$host;dbname=$dbname;charset=utf8mb4",
+                $username,
+                $password,
+                [
+                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                    PDO::ATTR_EMULATE_PREPARES => false
+                ]
+            );
+        } catch (PDOException $e) {
+            die("Connection failed: " . $e->getMessage() . 
+                "<br>Please check: 
+                <br>1. Database name: $dbname
+                <br>2. Username: $username
+                <br>3. Make sure MySQL is running in XAMPP/WAMP");
+        }
+    }
     
-    // Set charset to UTF-8
-    $pdo->exec("SET NAMES utf8mb4");
+    public static function getInstance() {
+        if (self::$instance === null) {
+            self::$instance = new Database();
+        }
+        return self::$instance;
+    }
     
-    // Connection successful - you can optionally log this
-    // error_log("Database connection established to: $dbname");
-    
-} catch(PDOException $e) {
-    // Log the error (don't display sensitive info in production)
-    error_log("Database connection failed: " . $e->getMessage());
-    
-    // Display user-friendly message
-    die("Could not connect to the database. Please try again later.");
-}
-
-// Optional: Create a function to get the database connection
-function getDatabaseConnection() {
-    global $pdo;
-    return $pdo;
-}
-
-// Optional: Helper function for prepared statements
-function query($sql, $params = []) {
-    global $pdo;
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
-    return $stmt;
+    public function getConnection() {
+        return $this->connection;
+    }
 }
 ?>

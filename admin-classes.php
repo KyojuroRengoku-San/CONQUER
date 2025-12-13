@@ -2,6 +2,12 @@
 session_start();
 require_once 'config/database.php';
 
+try {
+    $pdo = Database::getInstance()->getConnection();
+} catch (PDOException $e) {
+    die("Database connection failed: " . $e->getMessage());
+}
+
 if(!isset($_SESSION['user_id']) || !isset($_SESSION['user_type']) || $_SESSION['user_type'] !== 'admin') {
     header('Location: login.php');
     exit();
@@ -25,23 +31,36 @@ if($status === 'upcoming') {
     $whereClauses[] = "c.schedule < NOW()";
 }
 
-$whereSQL = $whereClauses ? 'WHERE ' . implode(' AND ', $whereClauses) : '';
+$whereSQL = !empty($whereClauses) ? 'WHERE ' . implode(' AND ', $whereClauses) : '';
 
-// FIXED: Using bookings table instead of class_enrollments
-$classes = $pdo->prepare("
-    SELECT c.*, t.specialty as trainer_name, 
-    (SELECT COUNT(*) FROM bookings b WHERE b.class_id = c.id AND b.status = 'confirmed') as enrollment_count
-    FROM classes c
-    JOIN trainers t ON c.trainer_id = t.id
-    $whereSQL
-    ORDER BY c.schedule " . ($status === 'past' ? 'DESC' : 'ASC')
-);
-$classes->execute($params);
-$classes = $classes->fetchAll();
-
-$totalClasses = count($classes);
-$upcomingCount = $pdo->query("SELECT COUNT(*) FROM classes WHERE schedule > NOW()")->fetchColumn();
-$pastCount = $pdo->query("SELECT COUNT(*) FROM classes WHERE schedule < NOW()")->fetchColumn();
+try {
+    // Get classes with proper table joins
+    $sql = "
+        SELECT 
+            c.*, 
+            COALESCE(u.full_name, 'Unknown Trainer') as trainer_name,
+            (SELECT COUNT(*) FROM bookings b WHERE b.class_id = c.id AND b.status = 'confirmed') as enrollment_count
+        FROM classes c
+        LEFT JOIN trainers t ON c.trainer_id = t.id
+        LEFT JOIN users u ON t.user_id = u.id
+        $whereSQL
+        ORDER BY c.schedule " . ($status === 'past' ? 'DESC' : 'ASC');
+    
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $classes = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    $totalClasses = count($classes);
+    $upcomingCount = $pdo->query("SELECT COUNT(*) FROM classes WHERE schedule > NOW()")->fetchColumn();
+    $pastCount = $pdo->query("SELECT COUNT(*) FROM classes WHERE schedule < NOW()")->fetchColumn();
+    
+} catch (PDOException $e) {
+    $classes = [];
+    $totalClasses = 0;
+    $upcomingCount = 0;
+    $pastCount = 0;
+    error_log("Classes query error: " . $e->getMessage());
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -49,57 +68,19 @@ $pastCount = $pdo->query("SELECT COUNT(*) FROM classes WHERE schedule < NOW()")-
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Manage Classes | Admin Dashboard</title>
+        <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700;800&family=Montserrat:wght@900&display=swap" rel="stylesheet">
+    
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- CSS -->
     <link rel="stylesheet" href="dashboard-style.css">
-    <style>
-        .classes-table .class-type {
-            display: inline-block;
-            padding: 0.25rem 0.75rem;
-            border-radius: 50px;
-            font-size: 0.85rem;
-            font-weight: 500;
-        }
-        .type-yoga { background: #ffeaa7; color: #e17055; }
-        .type-hiit { background: #fab1a0; color: #d63031; }
-        .type-strength { background: #74b9ff; color: #0984e3; }
-        .type-cardio { background: #fd79a8; color: #c44569; }
-        .type-crossfit { background: #81ecec; color: #00cec9; }
-        .type-others { background: #a29bfe; color: #6c5ce7; }
-        
-        .enrollment-progress {
-            width: 100px;
-            height: 8px;
-            background: #eee;
-            border-radius: 4px;
-            overflow: hidden;
-        }
-        .enrollment-fill {
-            height: 100%;
-            background: var(--primary-color);
-            border-radius: 4px;
-        }
-        
-        .status-tabs {
-            display: flex;
-            gap: 1rem;
-            margin-bottom: 1rem;
-            padding: 1rem;
-            background: white;
-            border-radius: 10px;
-        }
-        .status-tab {
-            padding: 0.5rem 1.5rem;
-            border-radius: 50px;
-            cursor: pointer;
-            border: 2px solid var(--border-color);
-            background: transparent;
-            font-weight: 500;
-        }
-        .status-tab.active {
-            background: var(--primary-color);
-            color: white;
-            border-color: var(--primary-color);
-        }
-    </style>
 </head>
 <body>
     <?php include 'admin-sidebar.php'; ?>
@@ -145,7 +126,7 @@ $pastCount = $pdo->query("SELECT COUNT(*) FROM classes WHERE schedule < NOW()")-
                         onclick="window.location.href='?status=past&type=<?php echo $type; ?>'">
                     Past Classes (<?php echo $pastCount; ?>)
                 </button>
-                <select onchange="window.location.href='?status=<?php echo $status; ?>&type='+this.value" style="margin-left: auto;">
+                <select onchange="window.location.href='?status=<?php echo $status; ?>&type='+this.value" style="margin-left: auto; padding: 0.75rem; border: 1px solid var(--border-color); border-radius: var(--radius-sm); font-family: inherit;">
                     <option value="">All Types</option>
                     <option value="yoga" <?php echo $type === 'yoga' ? 'selected' : ''; ?>>Yoga</option>
                     <option value="hiit" <?php echo $type === 'hiit' ? 'selected' : ''; ?>>HIIT</option>
@@ -162,8 +143,8 @@ $pastCount = $pdo->query("SELECT COUNT(*) FROM classes WHERE schedule < NOW()")-
                     <h3><?php echo $status === 'upcoming' ? 'Upcoming' : 'Past'; ?> Classes</h3>
                 </div>
                 <div class="card-body">
-                    <div class="table-container classes-table">
-                        <table>
+                    <div class="table-container">
+                        <table class="classes-table">
                             <thead>
                                 <tr>
                                     <th>Class Name</th>

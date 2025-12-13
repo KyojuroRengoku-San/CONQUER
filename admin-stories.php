@@ -2,26 +2,54 @@
 session_start();
 require_once 'config/database.php';
 
+try {
+    $pdo = Database::getInstance()->getConnection();
+} catch (PDOException $e) {
+    die("Database connection failed: " . $e->getMessage());
+}
+
 if(!isset($_SESSION['user_id']) || !isset($_SESSION['user_type']) || $_SESSION['user_type'] !== 'admin') {
     header('Location: login.php');
     exit();
 }
 
-// Get stories with filters
-$status = isset($_GET['status']) ? $_GET['status'] : 'pending';
+// Initialize variables
+$stories = [];
+$pendingCount = 0;
+$approvedCount = 0;
+$totalStories = 0;
 
-$whereClause = $status === 'all' ? '' : "WHERE approved = " . ($status === 'approved' ? '1' : '0');
-$stories = $pdo->query("
-    SELECT ss.*, u.full_name, u.email 
-    FROM success_stories ss
-    JOIN users u ON ss.user_id = u.id
-    $whereClause
-    ORDER BY ss.created_at DESC
-")->fetchAll();
+try {
+    // Get stories with filters
+    $status = isset($_GET['status']) ? $_GET['status'] : 'pending';
 
-$pendingCount = $pdo->query("SELECT COUNT(*) FROM success_stories WHERE approved = 0")->fetchColumn();
-$approvedCount = $pdo->query("SELECT COUNT(*) FROM success_stories WHERE approved = 1")->fetchColumn();
-$totalStories = $pendingCount + $approvedCount;
+    if($status === 'all') {
+        $whereClause = '';
+        $params = [];
+    } else {
+        $whereClause = "WHERE approved = " . ($status === 'approved' ? '1' : '0');
+        $params = [];
+    }
+    
+    $sql = "
+        SELECT ss.*, u.full_name, u.email 
+        FROM success_stories ss
+        JOIN users u ON ss.user_id = u.id
+        $whereClause
+        ORDER BY ss.created_at DESC
+    ";
+    
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $stories = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $pendingCount = $pdo->query("SELECT COUNT(*) FROM success_stories WHERE approved = 0")->fetchColumn() ?: 0;
+    $approvedCount = $pdo->query("SELECT COUNT(*) FROM success_stories WHERE approved = 1")->fetchColumn() ?: 0;
+    $totalStories = $pendingCount + $approvedCount;
+    
+} catch (PDOException $e) {
+    error_log("Stories error: " . $e->getMessage());
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -29,80 +57,19 @@ $totalStories = $pendingCount + $approvedCount;
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Success Stories | Admin Dashboard</title>
+       <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700;800&family=Montserrat:wght@900&display=swap" rel="stylesheet">
+    
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- CSS -->
     <link rel="stylesheet" href="dashboard-style.css">
-    <style>
-        .story-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-            gap: 1.5rem;
-            margin-top: 1rem;
-        }
-        .story-card {
-            background: white;
-            border-radius: 10px;
-            overflow: hidden;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        }
-        .story-header {
-            padding: 1.5rem 1.5rem 0;
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-        }
-        .story-avatar {
-            width: 60px;
-            height: 60px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-size: 1.5rem;
-        }
-        .story-body {
-            padding: 1rem 1.5rem;
-        }
-        .story-meta {
-            display: flex;
-            gap: 1rem;
-            margin: 0.5rem 0;
-            font-size: 0.9rem;
-            color: #666;
-        }
-        .story-content {
-            margin: 1rem 0;
-            line-height: 1.6;
-        }
-        .story-images {
-            display: flex;
-            gap: 0.5rem;
-            margin: 1rem 0;
-        }
-        .story-img {
-            width: 100px;
-            height: 100px;
-            border-radius: 5px;
-            object-fit: cover;
-        }
-        .story-actions {
-            display: flex;
-            gap: 0.5rem;
-            padding: 1rem 1.5rem;
-            background: #f8f9fa;
-            border-top: 1px solid #dee2e6;
-        }
-        .story-status {
-            display: inline-block;
-            padding: 0.25rem 0.75rem;
-            border-radius: 50px;
-            font-size: 0.85rem;
-            font-weight: 500;
-            margin-left: auto;
-        }
-        .status-pending { background: #fff3cd; color: #856404; }
-        .status-approved { background: #d4edda; color: #155724; }
-    </style>
 </head>
 <body>
     <?php include 'admin-sidebar.php'; ?>
@@ -114,7 +81,9 @@ $totalStories = $pendingCount + $approvedCount;
                 <input type="text" placeholder="Search stories...">
             </div>
             <div class="top-bar-actions">
-                <span class="notification-badge"><?php echo $pendingCount; ?></span>
+                <?php if($pendingCount > 0): ?>
+                    <span class="notification-badge"><?php echo $pendingCount; ?></span>
+                <?php endif; ?>
             </div>
         </div>
 

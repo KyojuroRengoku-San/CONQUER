@@ -2,6 +2,12 @@
 session_start();
 require_once 'config/database.php';
 
+try {
+    $pdo = Database::getInstance()->getConnection();
+} catch (PDOException $e) {
+    die("Database connection failed: " . $e->getMessage());
+}
+
 if(!isset($_SESSION['user_id']) || !isset($_SESSION['user_type']) || $_SESSION['user_type'] !== 'admin') {
     header('Location: login.php');
     exit();
@@ -11,77 +17,101 @@ if(!isset($_SESSION['user_id']) || !isset($_SESSION['user_type']) || $_SESSION['
 $startDate = isset($_GET['start_date']) ? $_GET['start_date'] : date('Y-m-01');
 $endDate = isset($_GET['end_date']) ? $_GET['end_date'] : date('Y-m-t');
 
-// Revenue report
-$revenueData = $pdo->prepare("
-    SELECT 
-        DATE_FORMAT(payment_date, '%Y-%m-%d') as date,
-        COUNT(*) as count,
-        SUM(amount) as revenue
-    FROM payments 
-    WHERE payment_date BETWEEN ? AND ?
-    AND status = 'completed'
-    GROUP BY DATE(payment_date)
-    ORDER BY date
-");
-$revenueData->execute([$startDate, $endDate]);
-$revenueData = $revenueData->fetchAll();
+// Initialize all variables
+$revenueData = [];
+$membershipData = [];
+$attendanceData = [];
+$topTrainers = [];
+$topPlans = [];
 
-// Membership growth
-$membershipData = $pdo->prepare("
-    SELECT 
-        DATE_FORMAT(created_at, '%Y-%m') as month,
-        COUNT(*) as new_members
-    FROM users 
-    WHERE user_type = 'member'
-    AND created_at >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
-    GROUP BY DATE_FORMAT(created_at, '%Y-%m')
-    ORDER BY month
-");
-$membershipData->execute();
-$membershipData = $membershipData->fetchAll();
-
-// Class attendance - FIXED: using bookings table instead of class_enrollments
-$attendanceData = $pdo->prepare("
-    SELECT 
-        c.class_type,
-        COUNT(b.id) as attendance,
-        AVG(c.current_enrollment) as avg_attendance
-    FROM classes c
-    LEFT JOIN bookings b ON c.id = b.class_id AND b.status = 'confirmed'
-    WHERE c.schedule BETWEEN ? AND ?
-    GROUP BY c.class_type
-");
-$attendanceData->execute([$startDate, $endDate]);
-$attendanceData = $attendanceData->fetchAll();
-
-// Top trainers - FIXED: using correct table joins
-$topTrainers = $pdo->prepare("
-    SELECT 
-        u.full_name,
-        COUNT(c.id) as classes_taught,
-        AVG(c.current_enrollment) as avg_attendance
-    FROM classes c
-    JOIN trainers t ON c.trainer_id = t.id
-    JOIN users u ON t.user_id = u.id
-    WHERE c.schedule BETWEEN ? AND ?
-    GROUP BY c.trainer_id
-    ORDER BY classes_taught DESC
-    LIMIT 5
-");
-$topTrainers->execute([$startDate, $endDate]);
-$topTrainers = $topTrainers->fetchAll();
-
-// Top memberships
-$topPlans = $pdo->query("
-    SELECT 
-        MembershipPlan,
-        COUNT(*) as count,
-        COUNT(*) * 100.0 / (SELECT COUNT(*) FROM gym_members) as percentage
-    FROM gym_members 
-    WHERE MembershipPlan IS NOT NULL
-    GROUP BY MembershipPlan
-    ORDER BY count DESC
-")->fetchAll();
+try {
+    // Revenue report with error handling
+    $revenueStmt = $pdo->prepare("
+        SELECT 
+            DATE_FORMAT(payment_date, '%Y-%m-%d') as date,
+            COUNT(*) as count,
+            COALESCE(SUM(amount), 0) as revenue
+        FROM payments 
+        WHERE payment_date BETWEEN ? AND ?
+        AND status = 'completed'
+        GROUP BY DATE(payment_date)
+        ORDER BY date
+    ");
+    $revenueStmt->execute([$startDate, $endDate]);
+    $revenueData = $revenueStmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    // Membership growth
+    $membershipStmt = $pdo->prepare("
+        SELECT 
+            DATE_FORMAT(created_at, '%Y-%m') as month,
+            COUNT(*) as new_members
+        FROM users 
+        WHERE user_type = 'member'
+        AND created_at >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
+        GROUP BY DATE_FORMAT(created_at, '%Y-%m')
+        ORDER BY month
+    ");
+    $membershipStmt->execute();
+    $membershipData = $membershipStmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    // Class attendance - with safe fallback
+    try {
+        $attendanceStmt = $pdo->prepare("
+            SELECT 
+                c.class_type,
+                COUNT(b.id) as attendance,
+                AVG(c.current_enrollment) as avg_attendance
+            FROM classes c
+            LEFT JOIN bookings b ON c.id = b.class_id AND b.status = 'confirmed'
+            WHERE c.schedule BETWEEN ? AND ?
+            GROUP BY c.class_type
+        ");
+        $attendanceStmt->execute([$startDate, $endDate]);
+        $attendanceData = $attendanceStmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Exception $e) {
+        $attendanceData = [];
+    }
+    
+    // Top trainers - with proper error handling
+    try {
+        $trainersStmt = $pdo->prepare("
+            SELECT 
+                COALESCE(u.full_name, 'Unknown') as full_name,
+                COUNT(c.id) as classes_taught,
+                AVG(c.current_enrollment) as avg_attendance
+            FROM classes c
+            LEFT JOIN trainers t ON c.trainer_id = t.id
+            LEFT JOIN users u ON t.user_id = u.id
+            WHERE c.schedule BETWEEN ? AND ?
+            GROUP BY c.trainer_id
+            ORDER BY classes_taught DESC
+            LIMIT 5
+        ");
+        $trainersStmt->execute([$startDate, $endDate]);
+        $topTrainers = $trainersStmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Exception $e) {
+        $topTrainers = [];
+    }
+    
+    // Top memberships
+    try {
+        $topPlans = $pdo->query("
+            SELECT 
+                MembershipPlan,
+                COUNT(*) as count,
+                COUNT(*) * 100.0 / (SELECT COUNT(*) FROM gym_members WHERE MembershipPlan IS NOT NULL) as percentage
+            FROM gym_members 
+            WHERE MembershipPlan IS NOT NULL AND MembershipPlan != ''
+            GROUP BY MembershipPlan
+            ORDER BY count DESC
+        ")->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Exception $e) {
+        $topPlans = [];
+    }
+    
+} catch (PDOException $e) {
+    error_log("Reports error: " . $e->getMessage());
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -89,61 +119,19 @@ $topPlans = $pdo->query("
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Reports & Analytics | Admin Dashboard</title>
-    <link rel="stylesheet" href="dashboard-style.css">
+       <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700;800&family=Montserrat:wght@900&display=swap" rel="stylesheet">
+    
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        .reports-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 1.5rem;
-            margin-top: 1rem;
-        }
-        .report-card {
-            background: white;
-            border-radius: 15px;
-            padding: 1.5rem;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-        }
-        .report-card.full-width {
-            grid-column: 1 / -1;
-        }
-        .report-filters {
-            background: white;
-            padding: 1rem;
-            border-radius: 10px;
-            margin-bottom: 1rem;
-            display: flex;
-            gap: 1rem;
-            align-items: flex-end;
-        }
-        .chart-container {
-            height: 300px;
-            margin-top: 1rem;
-        }
-        .stat-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 0.75rem 0;
-            border-bottom: 1px solid var(--border-color);
-        }
-        .stat-row:last-child {
-            border-bottom: none;
-        }
-        .stat-label {
-            color: #666;
-        }
-        .stat-value {
-            font-weight: 600;
-        }
-        .stat-change {
-            font-size: 0.9rem;
-            padding: 0.25rem 0.5rem;
-            border-radius: 3px;
-        }
-        .change-positive { background: #d4edda; color: #155724; }
-        .change-negative { background: #f8d7da; color: #721c24; }
-    </style>
+    
+    <!-- CSS -->
+    <link rel="stylesheet" href="dashboard-style.css">
 </head>
 <body>
     <?php include 'admin-sidebar.php'; ?>

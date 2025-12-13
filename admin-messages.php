@@ -2,39 +2,64 @@
 session_start();
 require_once 'config/database.php';
 
+try {
+    $pdo = Database::getInstance()->getConnection();
+} catch (PDOException $e) {
+    die("Database connection failed: " . $e->getMessage());
+}
+
 if(!isset($_SESSION['user_id']) || !isset($_SESSION['user_type']) || $_SESSION['user_type'] !== 'admin') {
     header('Location: login.php');
     exit();
 }
 
-// Get messages
-$statusFilter = isset($_GET['status']) ? $_GET['status'] : 'unread';
+try {
+    // Get messages
+    $statusFilter = isset($_GET['status']) ? $_GET['status'] : 'unread';
 
-// FIXED: Using status column instead of is_read
-switch($statusFilter) {
-    case 'read':
-        $whereClause = "WHERE cm.status IN ('read', 'replied', 'closed')";
-        break;
-    case 'all':
-        $whereClause = "";
-        break;
-    case 'unread':
-    default:
-        $whereClause = "WHERE cm.status = 'new'";
-        break;
+    // FIXED: Using status column instead of is_read
+    switch($statusFilter) {
+        case 'read':
+            $whereClause = "WHERE cm.status IN ('read', 'replied', 'closed')";
+            break;
+        case 'all':
+            $whereClause = "";
+            break;
+        case 'unread':
+        default:
+            $whereClause = "WHERE cm.status = 'new' OR cm.status = 'unread'";
+            break;
+    }
+
+    $stmt = $pdo->query("
+        SELECT cm.*, COALESCE(u.full_name, cm.name) as display_name, cm.email
+        FROM contact_messages cm
+        LEFT JOIN users u ON cm.email = u.email
+        $whereClause
+        ORDER BY cm.submitted_at DESC
+    ");
+    
+    if($stmt) {
+        $messages = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } else {
+        $messages = [];
+    }
+
+    // Counts - FIXED: Check if table exists
+    try {
+        $unreadCount = $pdo->query("SELECT COUNT(*) FROM contact_messages WHERE status IN ('new', 'unread')")->fetchColumn();
+    } catch (Exception $e) {
+        $unreadCount = 0;
+    }
+    
+    $totalMessages = count($messages);
+    
+} catch (PDOException $e) {
+    $messages = [];
+    $unreadCount = 0;
+    $totalMessages = 0;
+    error_log("Messages query error: " . $e->getMessage());
 }
-
-$messages = $pdo->query("
-    SELECT cm.*, u.full_name, u.email
-    FROM contact_messages cm
-    LEFT JOIN users u ON cm.email = u.email
-    $whereClause
-    ORDER BY cm.submitted_at DESC
-")->fetchAll();
-
-// Counts
-$unreadCount = $pdo->query("SELECT COUNT(*) FROM contact_messages WHERE status = 'new'")->fetchColumn();
-$totalMessages = count($messages);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -42,83 +67,19 @@ $totalMessages = count($messages);
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Messages | Admin Dashboard</title>
+        <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700;800&family=Montserrat:wght@900&display=swap" rel="stylesheet">
+    
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- CSS -->
     <link rel="stylesheet" href="dashboard-style.css">
-    <style>
-        .messages-container {
-            display: flex;
-            gap: 1.5rem;
-            margin-top: 1rem;
-        }
-        .message-list {
-            flex: 1;
-            background: white;
-            border-radius: 10px;
-            overflow: hidden;
-        }
-        .message-detail {
-            flex: 2;
-            background: white;
-            border-radius: 10px;
-            padding: 1.5rem;
-        }
-        .message-item {
-            padding: 1rem;
-            border-bottom: 1px solid var(--border-color);
-            cursor: pointer;
-            transition: background 0.3s ease;
-        }
-        .message-item:hover {
-            background: #f8f9fa;
-        }
-        .message-item.unread {
-            background: #e3f2fd;
-            font-weight: 500;
-        }
-        .message-item.active {
-            background: var(--primary-color);
-            color: white;
-        }
-        .message-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 0.5rem;
-        }
-        .message-subject {
-            font-weight: 600;
-            font-size: 1.1rem;
-            margin-bottom: 0.5rem;
-        }
-        .message-preview {
-            color: #666;
-            font-size: 0.9rem;
-            display: -webkit-box;
-            -webkit-line-clamp: 2;
-            -webkit-box-orient: vertical;
-            overflow: hidden;
-        }
-        .message-timestamp {
-            font-size: 0.8rem;
-            color: #999;
-        }
-        .message-actions {
-            display: flex;
-            gap: 0.5rem;
-            margin-top: 1.5rem;
-            padding-top: 1.5rem;
-            border-top: 1px solid var(--border-color);
-        }
-        .message-status {
-            display: inline-block;
-            padding: 0.25rem 0.75rem;
-            border-radius: 50px;
-            font-size: 0.85rem;
-        }
-        .status-new { background: #cce5ff; color: #004085; }
-        .status-read { background: #e2e3e5; color: #383d41; }
-        .status-replied { background: #d4edda; color: #155724; }
-        .status-closed { background: #d1ecf1; color: #0c5460; }
-    </style>
 </head>
 <body>
     <?php include 'admin-sidebar.php'; ?>

@@ -2,48 +2,66 @@
 session_start();
 require_once 'config/database.php';
 
+try {
+    $pdo = Database::getInstance()->getConnection();
+} catch (PDOException $e) {
+    die("Database connection failed: " . $e->getMessage());
+}
+
 if(!isset($_SESSION['user_id']) || !isset($_SESSION['user_type']) || $_SESSION['user_type'] !== 'admin') {
     header('Location: login.php');
     exit();
 }
 
-// Get payments with filters
-$status = isset($_GET['status']) ? $_GET['status'] : '';
-$month = isset($_GET['month']) ? $_GET['month'] : '';
+// Initialize variables
+$payments = [];
+$totalRevenue = 0;
+$monthlyRevenue = 0;
+$pendingPayments = 0;
 
-$whereClauses = [];
-$params = [];
+try {
+    // Get payments with filters
+    $status = isset($_GET['status']) ? $_GET['status'] : '';
+    $month = isset($_GET['month']) ? $_GET['month'] : '';
 
-if($status) {
-    $whereClauses[] = "p.status = ?";
-    $params[] = $status;
+    $whereClauses = [];
+    $params = [];
+
+    if($status) {
+        $whereClauses[] = "p.status = ?";
+        $params[] = $status;
+    }
+
+    if($month) {
+        $whereClauses[] = "DATE_FORMAT(p.payment_date, '%Y-%m') = ?";
+        $params[] = $month;
+    }
+
+    $whereSQL = !empty($whereClauses) ? 'WHERE ' . implode(' AND ', $whereClauses) : '';
+
+    $sql = "
+        SELECT p.*, u.full_name, u.email, 
+        gm.MembershipPlan
+        FROM payments p
+        JOIN users u ON p.user_id = u.id
+        LEFT JOIN gym_members gm ON u.email = gm.Email
+        $whereSQL
+        ORDER BY p.payment_date DESC
+        LIMIT 50
+    ";
+    
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $payments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // Stats with fallbacks
+    $totalRevenue = $pdo->query("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status = 'completed'")->fetchColumn();
+    $monthlyRevenue = $pdo->query("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status = 'completed' AND DATE_FORMAT(payment_date, '%Y-%m') = DATE_FORMAT(NOW(), '%Y-%m')")->fetchColumn();
+    $pendingPayments = $pdo->query("SELECT COUNT(*) FROM payments WHERE status = 'pending'")->fetchColumn();
+    
+} catch (PDOException $e) {
+    error_log("Payments error: " . $e->getMessage());
 }
-
-if($month) {
-    $whereClauses[] = "DATE_FORMAT(p.payment_date, '%Y-%m') = ?";
-    $params[] = $month;
-}
-
-$whereSQL = $whereClauses ? 'WHERE ' . implode(' AND ', $whereClauses) : '';
-
-// FIXED: Removed SubscriptionEndDate since it doesn't exist in gym_members table
-$payments = $pdo->prepare("
-    SELECT p.*, u.full_name, u.email, 
-    m.MembershipPlan
-    FROM payments p
-    JOIN users u ON p.user_id = u.id
-    LEFT JOIN gym_members m ON u.email = m.Email
-    $whereSQL
-    ORDER BY p.payment_date DESC
-    LIMIT 50
-");
-$payments->execute($params);
-$payments = $payments->fetchAll();
-
-// Stats
-$totalRevenue = $pdo->query("SELECT SUM(amount) FROM payments WHERE status = 'completed'")->fetchColumn();
-$monthlyRevenue = $pdo->query("SELECT SUM(amount) FROM payments WHERE status = 'completed' AND DATE_FORMAT(payment_date, '%Y-%m') = DATE_FORMAT(NOW(), '%Y-%m')")->fetchColumn();
-$pendingPayments = $pdo->query("SELECT COUNT(*) FROM payments WHERE status = 'pending'")->fetchColumn();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -51,51 +69,19 @@ $pendingPayments = $pdo->query("SELECT COUNT(*) FROM payments WHERE status = 'pe
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Payment Management | Admin Dashboard</title>
+        <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700;800&family=Montserrat:wght@900&display=swap" rel="stylesheet">
+    
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- CSS -->
     <link rel="stylesheet" href="dashboard-style.css">
-    <style>
-        .payment-amount {
-            font-weight: 700;
-            font-size: 1.1rem;
-        }
-        .payment-status {
-            display: inline-block;
-            padding: 0.25rem 0.75rem;
-            border-radius: 50px;
-            font-size: 0.85rem;
-            font-weight: 500;
-        }
-        .status-completed { background: #d4edda; color: #155724; }
-        .status-pending { background: #fff3cd; color: #856404; }
-        .status-failed { background: #f8d7da; color: #721c24; }
-        
-        .payment-filters {
-            display: flex;
-            gap: 1rem;
-            align-items: flex-end;
-            margin-bottom: 1rem;
-            padding: 1rem;
-            background: white;
-            border-radius: 10px;
-        }
-        
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 1rem;
-            margin-bottom: 1.5rem;
-        }
-        .stat-card-small {
-            background: white;
-            padding: 1rem;
-            border-radius: 10px;
-            text-align: center;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-        }
-        .stat-card-small h3 {
-            margin: 0;
-            color: var(--primary-color);
-        }
-    </style>
 </head>
 <body>
     <?php include 'admin-sidebar.php'; ?>
@@ -128,7 +114,7 @@ $pendingPayments = $pdo->query("SELECT COUNT(*) FROM payments WHERE status = 'pe
             </div>
 
             <!-- Quick Stats -->
-            <div class="stats-grid">
+            <div class="stats-grid-small">
                 <div class="stat-card-small">
                     <h3>$<?php echo number_format($monthlyRevenue, 2); ?></h3>
                     <p>This Month</p>
@@ -176,7 +162,7 @@ $pendingPayments = $pdo->query("SELECT COUNT(*) FROM payments WHERE status = 'pe
                 </div>
                 <div class="card-body">
                     <div class="table-container">
-                        <table>
+                        <table class="payments-table">
                             <thead>
                                 <tr>
                                     <th>Payment ID</th>

@@ -2,24 +2,47 @@
 session_start();
 require_once 'config/database.php';
 
+try {
+    $pdo = Database::getInstance()->getConnection();
+} catch (PDOException $e) {
+    die("Database connection failed: " . $e->getMessage());
+}
+
 if(!isset($_SESSION['user_id']) || !isset($_SESSION['user_type']) || $_SESSION['user_type'] !== 'admin') {
     header('Location: login.php');
     exit();
 }
 
-// Get trainers - CORRECTED column names to match your database
-$trainers = $pdo->query("
-    SELECT t.*, u.full_name, u.email,
-    t.specialty as specialization, 
-    t.certification as certifications,
-    t.years_experience as experience_years,
-    (SELECT COUNT(*) FROM classes c WHERE c.trainer_id = t.id) as total_classes
-    FROM trainers t
-    JOIN users u ON t.user_id = u.id
-    ORDER BY u.full_name
-")->fetchAll();
-
-$totalTrainers = count($trainers);
+try {
+    // Get trainers with proper error handling
+    $stmt = $pdo->query("
+        SELECT 
+            t.*, 
+            u.full_name, 
+            u.email,
+            COALESCE(t.specialty, t.specialization, 'General') as specialization,
+            COALESCE(t.certification, t.certifications, 'Not specified') as certifications,
+            COALESCE(t.years_experience, t.experience_years, 0) as experience_years,
+            (SELECT COUNT(*) FROM classes c WHERE c.trainer_id = t.id) as total_classes
+        FROM trainers t
+        LEFT JOIN users u ON t.user_id = u.id
+        ORDER BY COALESCE(u.full_name, 'ZZZ') ASC
+    ");
+    
+    if($stmt) {
+        $trainers = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } else {
+        $trainers = [];
+    }
+    
+    $totalTrainers = count($trainers);
+    
+} catch (PDOException $e) {
+    // If there's an error, show empty state
+    $trainers = [];
+    $totalTrainers = 0;
+    error_log("Trainer query error: " . $e->getMessage());
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -27,68 +50,19 @@ $totalTrainers = count($trainers);
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Manage Trainers | Admin Dashboard</title>
+       <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700;800&family=Montserrat:wght@900&display=swap" rel="stylesheet">
+    
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- CSS -->
     <link rel="stylesheet" href="dashboard-style.css">
-    <style>
-        .trainer-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-            gap: 1.5rem;
-            margin-top: 1rem;
-        }
-        .trainer-card {
-            background: white;
-            border-radius: 10px;
-            overflow: hidden;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-            transition: transform 0.3s ease;
-        }
-        .trainer-card:hover {
-            transform: translateY(-5px);
-        }
-        .trainer-header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 1.5rem;
-            text-align: center;
-        }
-        .trainer-avatar {
-            width: 80px;
-            height: 80px;
-            border-radius: 50%;
-            background: white;
-            margin: 0 auto 1rem;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: #667eea;
-            font-size: 2rem;
-        }
-        .trainer-body {
-            padding: 1.5rem;
-        }
-        .trainer-specialty {
-            display: inline-block;
-            background: var(--light-color);
-            padding: 0.25rem 0.75rem;
-            border-radius: 50px;
-            font-size: 0.85rem;
-            margin: 0.5rem 0;
-        }
-        .trainer-stats {
-            display: flex;
-            justify-content: space-between;
-            margin-top: 1rem;
-            padding-top: 1rem;
-            border-top: 1px solid var(--border-color);
-        }
-        .stat-item {
-            text-align: center;
-        }
-        .stat-value {
-            font-weight: 700;
-            font-size: 1.2rem;
-        }
-    </style>
 </head>
 <body>
     <?php include 'admin-sidebar.php'; ?>
@@ -104,7 +78,7 @@ $totalTrainers = count($trainers);
                     <i class="fas fa-plus"></i> Add Trainer
                 </button>
             </div>
-</div>
+        </div>
 
         <div class="dashboard-content">
             <div class="welcome-banner">
