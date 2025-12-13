@@ -10,39 +10,24 @@ if(!isset($_SESSION['user_id']) || !isset($_SESSION['user_type']) || $_SESSION['
 // Handle form submissions
 if($_SERVER['REQUEST_METHOD'] === 'POST') {
     if(isset($_POST['save_general'])) {
-        // Update general settings
-        $stmt = $pdo->prepare("
-            INSERT INTO settings (setting_key, setting_value) 
-            VALUES 
-                ('gym_name', ?),
-                ('gym_address', ?),
-                ('contact_email', ?),
-                ('contact_phone', ?)
-            ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)
-        ");
-        $stmt->execute([
-            $_POST['gym_name'],
-            $_POST['gym_address'],
-            $_POST['contact_email'],
-            $_POST['contact_phone']
-        ]);
-        $success = "General settings updated successfully!";
+        // For now, store in session or file since we don't have settings table
+        $_SESSION['gym_settings'] = [
+            'gym_name' => $_POST['gym_name'],
+            'gym_address' => $_POST['gym_address'],
+            'contact_email' => $_POST['contact_email'],
+            'contact_phone' => $_POST['contact_phone']
+        ];
+        $success = "General settings updated successfully! (Note: Stored in session only)";
     }
     
     if(isset($_POST['save_business'])) {
-        // Update business hours
-        $hours = json_encode($_POST['hours']);
-        $stmt = $pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES ('business_hours', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
-        $stmt->execute([$hours]);
-        $success = "Business hours updated successfully!";
+        $_SESSION['business_hours'] = $_POST['hours'];
+        $success = "Business hours updated successfully! (Note: Stored in session only)";
     }
     
     if(isset($_POST['save_membership'])) {
-        // Update membership plans
-        $plans = json_encode($_POST['plans']);
-        $stmt = $pdo->prepare("INSERT INTO settings (setting_key, setting_value) VALUES ('membership_plans', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
-        $stmt->execute([$plans]);
-        $success = "Membership plans updated successfully!";
+        $_SESSION['membership_plans'] = $_POST['plans'];
+        $success = "Membership plans updated successfully! (Note: Stored in session only)";
     }
     
     if(isset($_POST['change_password'])) {
@@ -58,16 +43,13 @@ if($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Load current settings
-$settings = $pdo->query("SELECT setting_key, setting_value FROM settings")->fetchAll(PDO::FETCH_KEY_PAIR);
+// Load current settings from session or use defaults
+$gymName = $_SESSION['gym_settings']['gym_name'] ?? 'CONQUER Gym';
+$gymAddress = $_SESSION['gym_settings']['gym_address'] ?? '';
+$contactEmail = $_SESSION['gym_settings']['contact_email'] ?? 'admin@conquergym.com';
+$contactPhone = $_SESSION['gym_settings']['contact_phone'] ?? '';
 
-// Default values
-$gymName = $settings['gym_name'] ?? 'CONQUER Gym';
-$gymAddress = $settings['gym_address'] ?? '';
-$contactEmail = $settings['contact_email'] ?? 'admin@conquergym.com';
-$contactPhone = $settings['contact_phone'] ?? '';
-
-$businessHours = isset($settings['business_hours']) ? json_decode($settings['business_hours'], true) : [
+$businessHours = $_SESSION['business_hours'] ?? [
     'Monday' => ['09:00', '22:00'],
     'Tuesday' => ['09:00', '22:00'],
     'Wednesday' => ['09:00', '22:00'],
@@ -77,7 +59,7 @@ $businessHours = isset($settings['business_hours']) ? json_decode($settings['bus
     'Sunday' => ['08:00', '18:00']
 ];
 
-$membershipPlans = isset($settings['membership_plans']) ? json_decode($settings['membership_plans'], true) : [
+$membershipPlans = $_SESSION['membership_plans'] ?? [
     'Basic' => ['price' => 49.99, 'features' => ['Access to gym equipment', 'Locker room access']],
     'Premium' => ['price' => 79.99, 'features' => ['All Basic features', 'Group classes access', 'Personal trainer consultation']],
     'Ultimate' => ['price' => 119.99, 'features' => ['All Premium features', 'Unlimited classes', 'Nutrition planning', 'Monthly body analysis']]
