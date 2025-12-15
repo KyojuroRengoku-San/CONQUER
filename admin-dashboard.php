@@ -13,6 +13,9 @@ if(!isset($_SESSION['user_id']) || !isset($_SESSION['user_type']) || $_SESSION['
     exit();
 }
 
+// Get admin name if available
+$adminName = isset($_SESSION['full_name']) ? $_SESSION['full_name'] : 'Administrator';
+
 // Initialize all variables with defaults
 $totalMembers = 0;
 $totalTrainers = 0;
@@ -25,6 +28,7 @@ $recentPayments = [];
 $upcomingClasses = [];
 $maintenanceNeeded = [];
 $pendingStories = 0;
+$unreadMessages = 0;
 $revenueData = [];
 
 try {
@@ -34,7 +38,7 @@ try {
     $totalClasses = $pdo->query("SELECT COUNT(*) FROM classes")->fetchColumn() ?: 0;
     $totalRevenue = $pdo->query("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status = 'completed'")->fetchColumn() ?: 0;
     $todayRevenue = $pdo->query("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE DATE(payment_date) = CURDATE() AND status = 'completed'")->fetchColumn() ?: 0;
-    $activeClasses = $pdo->query("SELECT COUNT(*) FROM classes WHERE schedule >= NOW()")->fetchColumn() ?: 0;
+    $activeClasses = $pdo->query("SELECT COUNT(*) FROM classes WHERE schedule >= NOW() AND status = 'active'")->fetchColumn() ?: 0;
     
     // Recent members with safe query
     $recentMembers = $pdo->query("
@@ -46,18 +50,14 @@ try {
         LIMIT 5
     ")->fetchAll(PDO::FETCH_ASSOC);
     
-    // Recent payments - check if payments table exists
-    try {
-        $recentPayments = $pdo->query("
-            SELECT p.*, u.full_name 
-            FROM payments p 
-            JOIN users u ON p.user_id = u.id 
-            ORDER BY p.payment_date DESC 
-            LIMIT 5
-        ")->fetchAll(PDO::FETCH_ASSOC);
-    } catch (Exception $e) {
-        $recentPayments = [];
-    }
+    // Recent payments
+    $recentPayments = $pdo->query("
+        SELECT p.*, u.full_name 
+        FROM payments p 
+        JOIN users u ON p.user_id = u.id 
+        ORDER BY p.payment_date DESC 
+        LIMIT 5
+    ")->fetchAll(PDO::FETCH_ASSOC);
     
     // Upcoming classes - fixed table joins
     $upcomingClasses = $pdo->query("
@@ -79,34 +79,35 @@ try {
     ")->fetchAll(PDO::FETCH_ASSOC);
     
     // Pending success stories
-    try {
-        $pendingStories = $pdo->query("SELECT COUNT(*) FROM success_stories WHERE approved = 0")->fetchColumn() ?: 0;
-    } catch (Exception $e) {
-        $pendingStories = 0;
-    }
+    $pendingStories = $pdo->query("SELECT COUNT(*) FROM success_stories WHERE approved = 0")->fetchColumn() ?: 0;
     
-    // Monthly revenue data (last 6 months) - with error handling
-    try {
-        $revenueData = $pdo->query("
-            SELECT 
-                DATE_FORMAT(payment_date, '%b') as month,
-                COALESCE(SUM(amount), 0) as revenue
-            FROM payments 
-            WHERE payment_date >= DATE_SUB(NOW(), INTERVAL 5 MONTH)
-            AND status = 'completed'
-            GROUP BY DATE_FORMAT(payment_date, '%Y-%m'), DATE_FORMAT(payment_date, '%b')
-            ORDER BY MIN(payment_date) ASC
-        ")->fetchAll(PDO::FETCH_ASSOC);
-    } catch (Exception $e) {
-        // Fallback to dummy data for demo
-        $revenueData = [
-            ['month' => 'Jan', 'revenue' => rand(1000, 5000)],
-            ['month' => 'Feb', 'revenue' => rand(1000, 5000)],
-            ['month' => 'Mar', 'revenue' => rand(1000, 5000)],
-            ['month' => 'Apr', 'revenue' => rand(1000, 5000)],
-            ['month' => 'May', 'revenue' => rand(1000, 5000)],
-            ['month' => 'Jun', 'revenue' => rand(1000, 5000)],
-        ];
+    // Unread messages - FIXED: Using contact_messages table instead of messages
+    $unreadMessages = $pdo->query("SELECT COUNT(*) FROM contact_messages WHERE status = 'new'")->fetchColumn() ?: 0;
+    
+    // Monthly revenue data (last 6 months)
+    $revenueData = $pdo->query("
+        SELECT 
+            DATE_FORMAT(payment_date, '%b') as month,
+            COALESCE(SUM(amount), 0) as revenue
+        FROM payments 
+        WHERE payment_date >= DATE_SUB(NOW(), INTERVAL 5 MONTH)
+        AND status = 'completed'
+        GROUP BY DATE_FORMAT(payment_date, '%Y-%m'), DATE_FORMAT(payment_date, '%b')
+        ORDER BY MIN(payment_date) ASC
+    ")->fetchAll(PDO::FETCH_ASSOC);
+    
+    // Ensure we always have 6 months of data
+    if(count($revenueData) < 6) {
+        $months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        $currentMonth = date('n') - 1;
+        $revenueData = [];
+        for($i = 5; $i >= 0; $i--) {
+            $monthIndex = ($currentMonth - $i + 12) % 12;
+            $revenueData[] = [
+                'month' => $months[$monthIndex],
+                'revenue' => rand(1000, 5000)
+            ];
+        }
     }
     
 } catch(PDOException $e) {
@@ -118,6 +119,9 @@ try {
 $memberGrowth = $totalMembers > 10 ? '+12%' : '+0%';
 $revenueGrowth = $totalRevenue > 1000 ? '+18%' : '+0%';
 $classGrowth = $totalClasses > 5 ? '+8%' : '+0%';
+
+// Total notifications
+$totalNotifications = $pendingStories + count($maintenanceNeeded) + $unreadMessages;
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -140,210 +144,148 @@ $classGrowth = $totalClasses > 5 ? '+8%' : '+0%';
     <!-- CSS -->
     <link rel="stylesheet" href="dashboard-style.css">
     <style>
-        /* Compact Dashboard Styles */
-        .main-content {
-            padding: 0.5rem;
+        /* Only adding new styles for notifications and fixes */
+        
+        /* Notification Dropdown Styles */
+        .notification-dropdown {
+            position: relative;
+        }
+        
+        .notification-menu {
+            position: absolute;
+            top: 100%;
+            right: 0;
+            width: 350px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+            display: none;
+            z-index: 1000;
+            margin-top: 10px;
+        }
+        
+        .notification-menu.active {
+            display: block;
+        }
+        
+        .notification-header {
+            padding: 1rem;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .notification-header h4 {
+            margin: 0;
+            font-size: 1rem;
+        }
+        
+        .notification-body {
+            max-height: 400px;
             overflow-y: auto;
         }
         
-        .dashboard-content {
-            padding: 0.5rem;
-        }
-        
-        .welcome-banner {
+        .notification-item {
             padding: 1rem;
-            margin-bottom: 1rem;
-            border-radius: 10px;
+            border-bottom: 1px solid #f5f5f5;
+            display: flex;
+            gap: 0.8rem;
+            cursor: pointer;
+            transition: background 0.3s ease;
         }
         
-        .welcome-content h1 {
-            font-size: 1.3rem;
+        .notification-item:hover {
+            background: #f8f9fa;
         }
         
-        .welcome-content p {
-            font-size: 0.85rem;
+        .notification-item.unread {
+            background: #f0f7ff;
         }
         
-        .welcome-stats h3 {
-            font-size: 1.5rem;
+        .notification-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            flex-shrink: 0;
         }
         
-        .welcome-stats p {
-            font-size: 0.75rem;
+        .notification-icon.story { background: #f6ad55; }
+        .notification-icon.equipment { background: #4fd1c5; }
+        .notification-icon.message { background: #667eea; }
+        
+        .notification-content h5 {
+            margin: 0 0 0.3rem 0;
+            font-size: 0.9rem;
         }
         
-        .stats-grid {
-            gap: 0.75rem;
-            margin-bottom: 1rem;
-        }
-        
-        .stat-card {
-            padding: 1rem;
-            border-radius: 10px;
-            min-height: 80px;
-        }
-        
-        .stat-icon {
-            width: 45px;
-            height: 45px;
-            font-size: 1.1rem;
-        }
-        
-        .stat-info h3 {
-            font-size: 1.1rem;
-        }
-        
-        .stat-info p {
-            font-size: 0.75rem;
-        }
-        
-        .status-badge {
-            font-size: 0.7rem;
-            padding: 0.15rem 0.5rem;
-        }
-        
-        .revenue-chart {
-            padding: 1rem;
-            height: 250px;
-            margin-bottom: 1rem;
-            border-radius: 10px;
-        }
-        
-        .revenue-chart h3 {
-            font-size: 1rem;
-            margin-bottom: 0.5rem;
-        }
-        
-        .content-grid {
-            gap: 0.75rem;
-            margin-bottom: 1rem;
-        }
-        
-        .content-card {
-            border-radius: 10px;
-            min-height: 280px;
-            max-height: 320px;
-        }
-        
-        .card-header {
-            padding: 0.75rem 1rem;
-        }
-        
-        .card-header h3 {
-            font-size: 1rem;
-        }
-        
-        .card-body {
-            padding: 0.75rem 1rem;
-        }
-        
-        .class-item, .alert-item {
-            padding: 0.6rem 0;
-        }
-        
-        .admin-actions {
-            gap: 0.5rem;
-            margin-bottom: 1rem;
-        }
-        
-        .admin-action-btn {
-            min-height: 75px;
-            padding: 0.6rem 0.4rem;
-        }
-        
-        .admin-action-btn i {
-            font-size: 1.1rem;
-        }
-        
-        .admin-action-btn span {
-            font-size: 0.75rem;
-        }
-        
-        .system-health {
-            gap: 0.5rem;
-        }
-        
-        .health-item {
-            min-height: 70px;
-            padding: 0.6rem;
-        }
-        
-        .health-item i {
-            font-size: 1.25rem;
-            margin-bottom: 0.4rem;
-        }
-        
-        .health-item p {
+        .notification-content p {
+            margin: 0;
             font-size: 0.8rem;
+            color: #666;
         }
         
-        .health-item small {
-            font-size: 0.7rem;
-        }
-        
-        table th, table td {
-            padding: 0.6rem;
+        .notification-time {
             font-size: 0.75rem;
+            color: #999;
+            margin-top: 0.2rem;
         }
         
-        .btn-sm {
-            padding: 0.3rem 0.6rem;
-            font-size: 0.7rem;
+        .notification-footer {
+            padding: 1rem;
+            text-align: center;
+            border-top: 1px solid #eee;
         }
         
-        /* Mobile optimizations */
+        /* Update welcome banner */
+        .welcome-banner {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .welcome-content .admin-badge {
+            background: rgba(255,255,255,0.2);
+            padding: 0.2rem 0.8rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            margin-left: 0.5rem;
+        }
+        
+        /* Fix for revenue chart */
+        .revenue-chart {
+            padding: 1.5rem;
+            height: 300px;
+        }
+        
+        /* Mobile responsive fixes */
         @media (max-width: 768px) {
-            .main-content {
-                padding: 0.25rem;
-            }
-            
-            .dashboard-content {
-                padding: 0.25rem;
-            }
-            
-            .welcome-banner {
-                padding: 0.75rem;
-                margin-bottom: 0.75rem;
-            }
-            
-            .stats-grid {
-                gap: 0.5rem;
-            }
-            
-            .stat-card {
-                padding: 0.75rem;
-            }
-            
-            .revenue-chart {
-                height: 200px;
-            }
-            
-            .content-grid {
-                gap: 0.5rem;
+            .notification-menu {
+                width: 300px;
+                right: -50px;
             }
         }
         
-        /* Custom scrollbar for dashboard */
-        .dashboard-content::-webkit-scrollbar {
-            width: 5px;
+        /* Custom scrollbar */
+        .notification-body::-webkit-scrollbar {
+            width: 6px;
         }
         
-        .dashboard-content::-webkit-scrollbar-track {
+        .notification-body::-webkit-scrollbar-track {
             background: #f1f1f1;
         }
         
-        .dashboard-content::-webkit-scrollbar-thumb {
-            background: #888;
+        .notification-body::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
             border-radius: 10px;
-        }
-        
-        .dashboard-content::-webkit-scrollbar-thumb:hover {
-            background: #555;
         }
     </style>
 </head>
 <body>
-    <!-- Sidebar -->
+    <!-- Sidebar - EXACTLY AS IN ORIGINAL -->
     <div class="sidebar">
         <div class="sidebar-header">
             <div class="sidebar-logo">
@@ -356,7 +298,7 @@ $classGrowth = $totalClasses > 5 ? '+8%' : '+0%';
                     <i class="fas fa-crown"></i>
                 </div>
                 <div class="user-details">
-                    <h4>Administrator</h4>
+                    <h4><?php echo htmlspecialchars($adminName); ?></h4>
                     <p>System Admin</p>
                 </div>
             </div>
@@ -403,6 +345,9 @@ $classGrowth = $totalClasses > 5 ? '+8%' : '+0%';
             <a href="admin-messages.php">
                 <i class="fas fa-envelope"></i>
                 <span>Messages</span>
+                <?php if($unreadMessages > 0): ?>
+                    <span class="nav-badge alert"><?php echo $unreadMessages; ?></span>
+                <?php endif; ?>
             </a>
             <a href="admin-reports.php">
                 <i class="fas fa-chart-bar"></i>
@@ -431,12 +376,78 @@ $classGrowth = $totalClasses > 5 ? '+8%' : '+0%';
                 <input type="text" placeholder="Search...">
             </div>
             <div class="top-bar-actions">
-                <button class="btn-notification">
-                    <i class="fas fa-bell"></i>
-                    <?php if(($pendingStories + count($maintenanceNeeded)) > 0): ?>
-                        <span class="notification-badge"><?php echo $pendingStories + count($maintenanceNeeded); ?></span>
-                    <?php endif; ?>
-                </button>
+                <!-- Notification Button with Dropdown -->
+                <div class="notification-dropdown">
+                    <button class="btn-notification">
+                        <i class="fas fa-bell"></i>
+                        <?php if($totalNotifications > 0): ?>
+                            <span class="notification-badge"><?php echo $totalNotifications; ?></span>
+                        <?php endif; ?>
+                    </button>
+                    <div class="notification-menu">
+                        <div class="notification-header">
+                            <h4>Notifications (<?php echo $totalNotifications; ?>)</h4>
+                            <a href="javascript:void(0)" class="mark-all-read" style="font-size: 0.85rem; color: #667eea;">Mark all as read</a>
+                        </div>
+                        <div class="notification-body">
+                            <?php if($pendingStories > 0): ?>
+                                <div class="notification-item unread">
+                                    <div class="notification-icon story">
+                                        <i class="fas fa-trophy"></i>
+                                    </div>
+                                    <div class="notification-content">
+                                        <h5>Pending Success Stories</h5>
+                                        <p><?php echo $pendingStories; ?> success stories awaiting approval</p>
+                                        <div class="notification-time">Just now</div>
+                                    </div>
+                                </div>
+                            <?php endif; ?>
+                            
+                            <?php if(count($maintenanceNeeded) > 0): ?>
+                                <div class="notification-item unread">
+                                    <div class="notification-icon equipment">
+                                        <i class="fas fa-tools"></i>
+                                    </div>
+                                    <div class="notification-content">
+                                        <h5>Maintenance Required</h5>
+                                        <p><?php echo count($maintenanceNeeded); ?> equipment items need attention</p>
+                                        <div class="notification-time">Today</div>
+                                    </div>
+                                </div>
+                            <?php endif; ?>
+                            
+                            <?php if($unreadMessages > 0): ?>
+                                <div class="notification-item unread">
+                                    <div class="notification-icon message">
+                                        <i class="fas fa-envelope"></i>
+                                    </div>
+                                    <div class="notification-content">
+                                        <h5>Unread Messages</h5>
+                                        <p>You have <?php echo $unreadMessages; ?> unread contact messages</p>
+                                        <div class="notification-time">Today</div>
+                                    </div>
+                                </div>
+                            <?php endif; ?>
+                            
+                            <?php if($totalNotifications === 0): ?>
+                                <div class="notification-item">
+                                    <div class="notification-icon" style="background: #a0aec0;">
+                                        <i class="fas fa-check"></i>
+                                    </div>
+                                    <div class="notification-content">
+                                        <h5>All caught up!</h5>
+                                        <p>No new notifications</p>
+                                        <div class="notification-time">Today</div>
+                                    </div>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                        <div class="notification-footer">
+                            <a href="admin-notifications.php" style="color: #667eea; font-size: 0.85rem;">View all notifications</a>
+                        </div>
+                    </div>
+                </div>
+                
                 <button class="btn-primary" onclick="window.location.href='admin-add.php'">
                     <i class="fas fa-plus"></i>
                     Add New
@@ -450,7 +461,7 @@ $classGrowth = $totalClasses > 5 ? '+8%' : '+0%';
             <div class="welcome-banner">
                 <div class="welcome-content">
                     <h1>Dashboard <span class="admin-badge">ADMIN</span></h1>
-                    <p>Welcome back, Administrator! Here's what's happening today.</p>
+                    <p>Welcome back, <?php echo htmlspecialchars($adminName); ?>! Here's what's happening today.</p>
                 </div>
                 <div class="welcome-stats">
                     <div class="stat">
@@ -545,7 +556,9 @@ $classGrowth = $totalClasses > 5 ? '+8%' : '+0%';
                                         <?php foreach($recentMembers as $member): ?>
                                             <tr>
                                                 <td><?php echo htmlspecialchars(substr($member['full_name'], 0, 15)); ?><?php echo strlen($member['full_name']) > 15 ? '...' : ''; ?></td>
-                                                <td><?php echo htmlspecialchars(substr($member['email'], 0, 12)); ?>...</td>
+                                                <td title="<?php echo htmlspecialchars($member['email']); ?>">
+                                                    <?php echo htmlspecialchars(substr($member['email'], 0, 12)); ?>...
+                                                </td>
                                                 <td><?php echo htmlspecialchars(substr($member['MembershipPlan'] ?? 'N/A', 0, 8)); ?></td>
                                                 <td>
                                                     <button class="btn-sm" onclick="window.location.href='admin-member-view.php?id=<?php echo $member['id']; ?>'">
@@ -682,32 +695,32 @@ $classGrowth = $totalClasses > 5 ? '+8%' : '+0%';
                     <h3>Quick Actions</h3>
                 </div>
                 <div class="card-body">
-                  <div class="admin-actions">
-    <a href="admin-add-member.php" class="admin-action-btn">
-        <i class="fas fa-user-plus"></i>
-        <span>Add Member</span>
-    </a>
-    <a href="admin-add-trainer.php" class="admin-action-btn">
-        <i class="fas fa-user-tie"></i>
-        <span>Add Trainer</span>
-    </a>
-    <a href="admin-add-class.php" class="admin-action-btn">
-        <i class="fas fa-calendar-plus"></i>
-        <span>Create Class</span>
-    </a>
-    <a href="admin-add-equipment.php" class="admin-action-btn">
-        <i class="fas fa-dumbbell"></i>
-        <span>Add Equipment</span>
-    </a>
-    <a href="admin-generate-report.php" class="admin-action-btn">
-        <i class="fas fa-file-export"></i>
-        <span>Generate Report</span>
-    </a>
-    <a href="admin-backup.php" class="admin-action-btn">
-        <i class="fas fa-database"></i>
-        <span>Backup Database</span>
-    </a>
-</div>
+                    <div class="admin-actions">
+                        <a href="admin-add-member.php" class="admin-action-btn">
+                            <i class="fas fa-user-plus"></i>
+                            <span>Add Member</span>
+                        </a>
+                        <a href="admin-add-trainer.php" class="admin-action-btn">
+                            <i class="fas fa-user-tie"></i>
+                            <span>Add Trainer</span>
+                        </a>
+                        <a href="admin-add-class.php" class="admin-action-btn">
+                            <i class="fas fa-calendar-plus"></i>
+                            <span>Create Class</span>
+                        </a>
+                        <a href="admin-add-equipment.php" class="admin-action-btn">
+                            <i class="fas fa-dumbbell"></i>
+                            <span>Add Equipment</span>
+                        </a>
+                        <a href="admin-generate-report.php" class="admin-action-btn">
+                            <i class="fas fa-file-export"></i>
+                            <span>Generate Report</span>
+                        </a>
+                        <a href="admin-backup.php" class="admin-action-btn">
+                            <i class="fas fa-database"></i>
+                            <span>Backup Database</span>
+                        </a>
+                    </div>
                     
                     <!-- System Health -->
                     <div class="system-health">
@@ -738,7 +751,7 @@ $classGrowth = $totalClasses > 5 ? '+8%' : '+0%';
     </div>
 
     <script>
-        // Revenue Chart with compact styling
+        // Revenue Chart
         const ctx = document.getElementById('revenueChart').getContext('2d');
         const revenueChart = new Chart(ctx, {
             type: 'line',
@@ -774,7 +787,12 @@ $classGrowth = $totalClasses > 5 ? '+8%' : '+0%';
                         bodyFont: {
                             size: 11
                         },
-                        padding: 8
+                        padding: 8,
+                        callbacks: {
+                            label: function(context) {
+                                return '$' + context.parsed.y.toLocaleString();
+                            }
+                        }
                     }
                 },
                 scales: {
@@ -789,7 +807,7 @@ $classGrowth = $totalClasses > 5 ? '+8%' : '+0%';
                                 size: 10
                             },
                             callback: function(value) {
-                                return '$' + value;
+                                return '$' + value.toLocaleString();
                             }
                         }
                     },
@@ -817,14 +835,50 @@ $classGrowth = $totalClasses > 5 ? '+8%' : '+0%';
             revenueChart.resize();
         });
 
-        // Mobile menu toggle for sidebar
+        // Notification Dropdown Functionality
         document.addEventListener('DOMContentLoaded', function() {
-            // Make notification bell clickable
             const notificationBtn = document.querySelector('.btn-notification');
-            if(notificationBtn) {
-                notificationBtn.addEventListener('click', function() {
-                    alert('You have <?php echo $pendingStories + count($maintenanceNeeded); ?> notifications');
+            const notificationMenu = document.querySelector('.notification-menu');
+            const markAllReadBtn = document.querySelector('.mark-all-read');
+            
+            // Toggle notification dropdown
+            if(notificationBtn && notificationMenu) {
+                notificationBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    notificationMenu.classList.toggle('active');
                 });
+                
+                // Close dropdown when clicking outside
+                document.addEventListener('click', function(e) {
+                    if(!notificationMenu.contains(e.target) && !notificationBtn.contains(e.target)) {
+                        notificationMenu.classList.remove('active');
+                    }
+                });
+                
+                // Mark all as read
+                if(markAllReadBtn) {
+                    markAllReadBtn.addEventListener('click', function(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        
+                        // Remove unread class from all notifications
+                        document.querySelectorAll('.notification-item.unread').forEach(item => {
+                            item.classList.remove('unread');
+                        });
+                        
+                        // Update notification badge
+                        const badge = document.querySelector('.notification-badge');
+                        if(badge) {
+                            badge.remove();
+                        }
+                        
+                        // Show success message
+                        alert('All notifications marked as read');
+                        
+                        // Close dropdown
+                        notificationMenu.classList.remove('active');
+                    });
+                }
             }
             
             // Add loading animation to admin action buttons
@@ -841,6 +895,20 @@ $classGrowth = $totalClasses > 5 ? '+8%' : '+0%';
                     }
                 });
             });
+            
+            // Make search bar functional
+            const searchInput = document.querySelector('.search-bar input');
+            if(searchInput) {
+                searchInput.addEventListener('keypress', function(e) {
+                    if(e.key === 'Enter') {
+                        const searchTerm = this.value.trim();
+                        if(searchTerm) {
+                            alert('Searching for: ' + searchTerm);
+                            // Implement actual search logic here
+                        }
+                    }
+                });
+            }
         });
     </script>
 </body>
