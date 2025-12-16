@@ -2204,3 +2204,436 @@ table tbody tr:last-child td {
     height: auto;
     border-radius: var(--radius-sm);
 }
+/* ===== NOTIFICATION SYSTEM ===== */
+.notification-panel {
+    position: fixed;
+    top: 0;
+    right: -380px;
+    width: 380px;
+    height: 100vh;
+    background: var(--white);
+    box-shadow: var(--shadow-lg);
+    z-index: 1001;
+    transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    display: flex;
+    flex-direction: column;
+}
+
+.notification-panel.active {
+    right: 0;
+}
+
+.notification-header {
+    padding: 1.25rem 1.5rem;
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--gradient-primary);
+    color: white;
+    flex-shrink: 0;
+}
+
+.notification-header h3 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.close-btn {
+    background: rgba(255, 255, 255, 0.2);
+    border: none;
+    font-size: 1.5rem;
+    cursor: pointer;
+    color: white;
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    transition: var(--transition);
+    line-height: 1;
+    padding: 0;
+}
+
+.close-btn:hover {
+    background: rgba(255, 255, 255, 0.3);
+    transform: rotate(90deg);
+}
+
+.notification-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1rem;
+    background: var(--white);
+}
+
+.notification-item {
+    display: flex;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    border-radius: var(--radius-sm);
+    margin-bottom: 0.5rem;
+    background: var(--light-color);
+    transition: var(--transition);
+    cursor: pointer;
+    border-left: 3px solid transparent;
+}
+
+.notification-item:hover {
+    background: rgba(255, 71, 87, 0.1);
+    border-left-color: var(--primary-color);
+    transform: translateX(3px);
+}
+
+.notification-item i {
+    font-size: 1rem;
+    margin-top: 0.15rem;
+    flex-shrink: 0;
+    width: 20px;
+    text-align: center;
+}
+
+.notification-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.notification-content p {
+    margin: 0 0 0.25rem 0;
+    color: var(--dark-color);
+    font-weight: 500;
+    line-height: 1.4;
+    font-size: 0.85rem;
+}
+
+.notification-content small {
+    font-size: 0.75rem;
+    color: var(--text-light);
+    display: block;
+}
+
+.notification-footer {
+    padding: 1rem;
+    border-top: 1px solid var(--border-color);
+    background: var(--white);
+    flex-shrink: 0;
+}
+
+.notification-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 1000;
+    display: none;
+    backdrop-filter: blur(2px);
+}
+
+.notification-overlay.active {
+    display: block;
+}
+
+.notification-empty {
+    text-align: center;
+    padding: 2rem 1rem;
+    color: var(--text-light);
+}
+
+.notification-empty i {
+    font-size: 2.5rem;
+    margin-bottom: 0.75rem;
+    opacity: 0.3;
+    display: block;
+}
+
+.notification-empty p {
+    font-size: 0.9rem;
+    margin: 0 0 0.5rem 0;
+    font-style: italic;
+}
+
+.notification-empty small {
+    font-size: 0.8rem;
+    opacity: 0.7;
+}
+
+/* Toast notifications */
+.toast-notification {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: var(--success-color);
+    color: white;
+    padding: 0.75rem 1rem;
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    max-width: 300px;
+    animation: slideInRight 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.toast-notification.success {
+    background: var(--success-color);
+}
+
+.toast-notification.error {
+    background: var(--danger-color);
+}
+
+.toast-notification.warning {
+    background: var(--warning-color);
+}
+
+.toast-notification.info {
+    background: var(--info-color);
+}
+
+/* Text colors for notifications */
+.text-primary { color: var(--primary-color) !important; }
+.text-success { color: var(--success-color) !important; }
+.text-warning { color: var(--warning-color) !important; }
+.text-danger { color: var(--danger-color) !important; }
+.text-info { color: var(--info-color) !important; }
+
+/* Animations */
+@keyframes slideInRight {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+@keyframes slideOutRight {
+    from {
+        transform: translateX(0);
+        opacity: 1;
+    }
+    to {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+}
+
+@keyframes pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+    100% { transform: scale(1); }
+}
+
+/* Notification badge animation */
+.notification-badge {
+    animation: pulse 2s infinite;
+}
+
+/* Progress tracker */
+.progress-tracker {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.progress-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.progress-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--dark-color);
+}
+
+.progress-bar {
+    height: 8px;
+    background: var(--light-color);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.progress {
+    height: 100%;
+    background: linear-gradient(90deg, var(--primary-color), var(--primary-dark));
+    border-radius: 4px;
+    transition: width 1s ease;
+}
+
+/* Quick actions grid */
+.quick-actions-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+}
+
+.action-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 1.25rem 0.75rem;
+    background: var(--light-color);
+    border-radius: var(--radius-md);
+    text-decoration: none;
+    color: var(--dark-color);
+    transition: var(--transition);
+    text-align: center;
+    min-height: 100px;
+}
+
+.action-item:hover {
+    background: var(--primary-color);
+    color: white;
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-sm);
+}
+
+.action-item i {
+    font-size: 1.75rem;
+    margin-bottom: 0.75rem;
+    color: inherit;
+}
+
+.action-item span {
+    font-size: 0.85rem;
+    font-weight: 500;
+    line-height: 1.3;
+}
+
+/* Error message */
+.error-message {
+    background: rgba(255, 71, 87, 0.1);
+    border: 1px solid var(--danger-color);
+    color: var(--danger-color);
+    padding: 1rem 1.25rem;
+    border-radius: var(--radius-md);
+    margin: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    animation: slideIn 0.3s ease;
+}
+
+.error-message i {
+    font-size: 1.25rem;
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Responsive notifications */
+@media (max-width: 480px) {
+    .notification-panel {
+        width: 100%;
+        max-width: 380px;
+        box-shadow: none;
+    }
+    
+    .notification-header {
+        padding: 1rem;
+    }
+    
+    .notification-list {
+        padding: 0.75rem;
+    }
+    
+    .notification-item {
+        padding: 0.75rem;
+    }
+    
+    .toast-notification {
+        left: 20px;
+        right: 20px;
+        max-width: none;
+    }
+    
+    .quick-actions-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+/* Mobile sidebar toggle */
+.mobile-menu-toggle {
+    display: none;
+    position: fixed;
+    top: 1rem;
+    left: 1rem;
+    z-index: 1002;
+    background: var(--primary-color);
+    color: white;
+    width: 45px;
+    height: 45px;
+    border-radius: 50%;
+    border: none;
+    font-size: 1.25rem;
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    box-shadow: var(--shadow-lg);
+    transition: var(--transition);
+}
+
+.mobile-menu-toggle:hover {
+    transform: scale(1.1);
+}
+
+@media (max-width: 768px) {
+    .mobile-menu-toggle {
+        display: flex;
+    }
+    
+    .sidebar {
+        transform: translateX(-100%);
+    }
+    
+    .sidebar.active {
+        transform: translateX(0);
+    }
+    
+    .main-content {
+        margin-left: 0;
+    }
+}
+
+/* Print styles */
+@media print {
+    .sidebar,
+    .top-bar,
+    .notification-panel,
+    .notification-overlay,
+    .mobile-menu-toggle,
+    .btn-notification {
+        display: none !important;
+    }
+    
+    .main-content {
+        margin-left: 0 !important;
+    }
+    
+    .dashboard-content {
+        padding: 0 !important;
+    }
+}
